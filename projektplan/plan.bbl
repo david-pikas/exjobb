@@ -1,0 +1,91 @@
+% $ biblatex auxiliary file $
+% $ biblatex bbl format version 3.1 $
+% Do not modify the above lines!
+%
+% This is an auxiliary file used by the 'biblatex' package.
+% This file may safely be deleted. It will be recreated by
+% biber as required.
+%
+\begingroup
+\makeatletter
+\@ifundefined{ver@biblatex.sty}
+  {\@latex@error
+     {Missing 'biblatex' package}
+     {The bibliography requires the 'biblatex' package.}
+      \aftergroup\endinput}
+  {}
+\endgroup
+
+
+\refsection{0}
+  \datalist[entry]{nty/global//global/global}
+    \entry{rust}{book}{}
+      \name{author}{2}{}{%
+        {{hash=a41f7649d631481ec7b8c9984f13ca74}{%
+           family={Klabnik},
+           familyi={K\bibinitperiod},
+           given={Steve},
+           giveni={S\bibinitperiod}}}%
+        {{hash=dddb7b905682bcd4ef905d1f964c7ae8}{%
+           family={Nichols},
+           familyi={N\bibinitperiod},
+           given={Carol},
+           giveni={C\bibinitperiod}}}%
+      }
+      \strng{namehash}{e2d6cc0cf49d363084c5ab92add7b56f}
+      \strng{fullhash}{e2d6cc0cf49d363084c5ab92add7b56f}
+      \strng{bibnamehash}{e2d6cc0cf49d363084c5ab92add7b56f}
+      \strng{authorbibnamehash}{e2d6cc0cf49d363084c5ab92add7b56f}
+      \strng{authornamehash}{e2d6cc0cf49d363084c5ab92add7b56f}
+      \strng{authorfullhash}{e2d6cc0cf49d363084c5ab92add7b56f}
+      \field{sortinit}{K}
+      \field{sortinithash}{d3edc18d54b9438a72c24c925bfb38f4}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{isbn}{9781718500440}
+      \field{title}{The Rust Programming Language}
+      \field{year}{2019}
+    \endentry
+    \entry{csmith}{inproceedings}{}
+      \name{author}{4}{}{%
+        {{hash=2d1d4291a00a276c1d4f145a371f3355}{%
+           family={Yang},
+           familyi={Y\bibinitperiod},
+           given={Xuejun},
+           giveni={X\bibinitperiod}}}%
+        {{hash=f532a47a63f16b583c4455dea6a8018e}{%
+           family={Chen},
+           familyi={C\bibinitperiod},
+           given={Yang},
+           giveni={Y\bibinitperiod}}}%
+        {{hash=71c9e7e491adb44490039265dba0f856}{%
+           family={Eide},
+           familyi={E\bibinitperiod},
+           given={Eric},
+           giveni={E\bibinitperiod}}}%
+        {{hash=43d6b8ac43fd2f45f710ff8a73b2c942}{%
+           family={Regehr},
+           familyi={R\bibinitperiod},
+           given={John},
+           giveni={J\bibinitperiod}}}%
+      }
+      \strng{namehash}{1cbf44d8ecda79028c2d4989ec07fd7a}
+      \strng{fullhash}{e8756471bf5ecc3109a9d3a87a5e4b18}
+      \strng{bibnamehash}{1cbf44d8ecda79028c2d4989ec07fd7a}
+      \strng{authorbibnamehash}{1cbf44d8ecda79028c2d4989ec07fd7a}
+      \strng{authornamehash}{1cbf44d8ecda79028c2d4989ec07fd7a}
+      \strng{authorfullhash}{e8756471bf5ecc3109a9d3a87a5e4b18}
+      \field{sortinit}{Y}
+      \field{sortinithash}{6ae2ff5458ff901249c2745238c951b7}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{booktitle}{Proceedings of the 32nd ACM SIGPLAN conference on Programming language design and implementation}
+      \field{title}{Finding and understanding bugs in C compilers}
+      \field{year}{2011}
+      \field{pages}{283\bibrangedash 294}
+      \range{pages}{12}
+    \endentry
+  \enddatalist
+\endrefsection
+\endinput
+
