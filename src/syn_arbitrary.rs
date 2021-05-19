@@ -357,7 +357,7 @@ impl<'a> ContextArbitrary<'a, Context> for TypePtr {
         Ok(TypePtr {
             star_token: parse_quote!(*),
             const_token: parse_quote!(const),
-            mutability: c_arbitrary(ctx, u)?,
+            mutability: maybe(u, parse_quote!(mut)),
             elem: c_arbitrary(ctx, u)?
         })
     }
@@ -368,7 +368,7 @@ impl<'a> ContextArbitrary<'a, Context> for TypeReference {
         Ok(TypeReference {
             and_token: parse_quote!(&),
             lifetime: c_arbitrary(ctx, u)?,
-            mutability: None,
+            mutability: maybe(u, parse_quote!(mut)),
             elem: c_arbitrary(ctx, u)?
         })
     }
@@ -575,7 +575,7 @@ impl<'a> ContextArbitrary<'a, Context> for PatIdent {
             attrs: vec!(),
             // TODO: ref
             by_ref: maybe(u, parse_quote!(ref)),
-            mutability: None,
+            mutability: maybe(u, parse_quote!(mut)),
             ident: c_arbitrary(ctx, u)?,
             subpat: opt_pat.map(|pat| (parse_quote!(@), pat))
         })
