@@ -1,0 +1,13 @@
+[package]
+name = "demo"
+version = "0.1.0"
+authors = ["David Pikas <david@pikas.se>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+syn = { version = "1.0", features = ["full", "extra-traits", "fold"] }
+quote = "1.0"
+either = "1.6"
+# proc_macro = "1.51"
