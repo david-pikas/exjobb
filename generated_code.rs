@@ -1,1 +1,1 @@
-pub unsafe trait lorem { } pub enum dolor { } pub (in ipsum) unsafe trait quux { } type bar = impl 'foo ;
+type bar = lorem;

@@ -1,7 +1,23 @@
+use arbitrary::Arbitrary;
 pub use arbitrary::{Result, Unstructured};
 use std::marker::PhantomData;
 pub trait ContextArbitrary<'a, Ctx>: Sized {
     fn c_arbitrary(ctx: &mut Ctx, u: &mut Unstructured<'a>) -> Result<Self>;
+}
+
+pub struct FiniteF64(pub f64);
+impl<'a> Arbitrary<'a> for FiniteF64 {
+    fn arbitrary(u: &mut Unstructured<'a>) -> Result<Self> {
+        let mut data: f64 = Arbitrary::arbitrary(u)?;
+        while !data.is_finite() {
+            data = Arbitrary::arbitrary(u)?;
+        }
+        return Ok(FiniteF64(data));
+    }
+}
+#[allow(dead_code)]
+pub fn unwrap_finite_f64(FiniteF64(f64): FiniteF64) -> f64 {
+   f64
 }
 
 pub struct ContextArbitraryIter<'a, 'b, 'c, El: ContextArbitrary<'a, Ctx>, Ctx> {
@@ -17,7 +33,8 @@ where El: ContextArbitrary<'a, Ctx> {
     type Item = Result<El>;
     fn next(&mut self) -> Option<Self::Item> {
         self.index += 1;
-        let keep_going = self.max_len <= self.index && self.u.arbitrary().unwrap_or(false);
+        let keep_going = self.max_len <= self.index
+                      && self.u.arbitrary().unwrap_or(false);
         if keep_going {
             Some(c_arbitrary(self.ctx, self.u))
         } else {
@@ -29,7 +46,7 @@ where El: ContextArbitrary<'a, Ctx> {
 pub fn c_arbitrary_iter<'a, 'b, 'c, El, Ctx>(ctx: &'c mut Ctx, u: &'b mut Unstructured<'a>)
    -> ContextArbitraryIter<'a, 'b, 'c, El, Ctx>
    where El: ContextArbitrary<'a, Ctx> {
-    let max_len = u.int_in_range(0..=4).unwrap();
+    let max_len = u.int_in_range(0..=5).unwrap();
     ContextArbitraryIter {
         u, ctx, max_len, index: 0, _marker: PhantomData
     }
