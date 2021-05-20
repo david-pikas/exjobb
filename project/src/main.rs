@@ -17,7 +17,7 @@ fn main() {
             let wrapped_ast: Result<rustc_ast_arbitrary::WrappedFile> =
                 with_stack_space_of(32 * 1024 * 1024, move || {
                     let mut rng = thread_rng();
-                    let len = rng.gen_range(1000000..10000000);
+                    let len = rng.gen_range(10000000..100000000);
                     let data: Vec<u8> = distributions::Standard.sample_iter(&mut rng).take(len).collect();
                     let mut u = Unstructured::new(&data);
                     Arbitrary::arbitrary(&mut u)
@@ -41,19 +41,21 @@ fn main() {
             Ok(syn_arbitrary::WrappedFile(a)) => a,
             Err(e) => panic!("{:?}", e)
         };
-        // println!("{:?}", ast);
+        println!("{:?}", ast);
+        println!("");
         code_str = quote!(#ast).to_string();
-   }
+    }
     println!("{}", code_str);
     let filename = "generated_code.rs";
     fs::write(filename, &code_str).expect("Failed writing file");
     if compile {
         let compilation_output =
-            Command::new("rustc")
-                .arg(filename)
-                .arg("--allow").arg("warnings")
-                .output()
-                .expect("Error executing compile command");
+            Command::new("rustfmt").arg(filename).output().unwrap();
+            // Command::new("rustc")
+            //     .arg(filename)
+            //     .arg("--allow").arg("warnings")
+            //     .output()
+            //     .expect("Error executing compile command");
         println!("{}", str::from_utf8(&compilation_output.stdout).unwrap());
         println!("{}", str::from_utf8(&compilation_output.stderr).unwrap());
     }
