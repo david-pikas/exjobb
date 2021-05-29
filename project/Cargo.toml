@@ -17,3 +17,4 @@ rustc-ap-rustc_data_structures = "720"
 scoped-tls = "1.0"
 quote = "1.0"
 rand = "0.8"
+add_depth = { path = "add_depth" }
