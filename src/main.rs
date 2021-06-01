@@ -4,15 +4,26 @@ use rand::{distributions, prelude::Distribution, thread_rng, Rng};
 use std::process::Command;
 use std::{env, fs, str, thread};
 
-mod syn_arbitrary;
-use syn_arbitrary::{Context, make_wrapped_file};
+#[macro_use]
 mod context_arbitrary;
+use context::Context;
 
-fn main() {
+#[macro_use]
+mod context;
+
+#[macro_use]
+mod semantics;
+
+mod syn_arbitrary;
+use syn_arbitrary::make_wrapped_file;
+
+use crate::syn_arbitrary::WrappedFile;
+
+fn main() -> Result<()> {
     let semantically_correct: bool = Some(String::from("syntax")) != env::args().nth(1);
     let code_str: String;
     
-    let wrapped_ast: Result<syn_arbitrary::WrappedFile> =
+    let wrapped_ast: syn_arbitrary::WrappedFile =
         with_stack_space_of(64 * 1024 * 1024, move || {
             let mut rng = thread_rng();
             let len = rng.gen_range(100000..1000000);
@@ -20,14 +31,12 @@ fn main() {
                 .sample_iter(&mut rng)
                 .take(len)
                 .collect();
+            
             let mut u = Unstructured::new(&data);
             let mut ctx = Context::make_context(semantically_correct);
             make_wrapped_file(&mut ctx, &mut u)
-        });
-    let ast: syn::File = match wrapped_ast {
-        Ok(syn_arbitrary::WrappedFile(a)) => a,
-        Err(e) => panic!("{:?}", e),
-    };
+        })?;
+    let WrappedFile(ast) = wrapped_ast;
     let ast_string = format!("{:#?}", ast);
     let ast_filename = "ast.rs";
     fs::write(ast_filename, &ast_string).expect("Failed writing file");
@@ -39,6 +48,7 @@ fn main() {
         Command::new("rustc")
             .arg(filename)
             .arg("--allow").arg("warnings")
+            .arg("--edition").arg("2018")
             .output().expect("Error executing compile command")
     } else {
         Command::new("rustfmt").arg(filename)
@@ -47,6 +57,7 @@ fn main() {
     };
     println!("{}", str::from_utf8(&compilation_output.stdout).unwrap());
     println!("{}", str::from_utf8(&compilation_output.stderr).unwrap());
+    return Ok(())
 }
 
 fn with_stack_space_of<T, F>(stack_space: usize, closure: F) -> T
