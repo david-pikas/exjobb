@@ -1,0 +1,1 @@
+# ! [no_main] pub enum foo { }

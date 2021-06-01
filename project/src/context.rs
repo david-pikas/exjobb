@@ -1,18 +1,13 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
-struct Lifetime<'a>(&'a str);
-struct Type<'a> { name: &'a str, lifetime_args: Vec<Lifetime<'a>>, type_args: Vec<Type<'a>> }
-struct Kind { lifetimes: u8, types: u8 }
-type ValScope<'a> = HashMap<&'a str, (Lifetime<'a>, Type<'a>)>;
-type TypeScope<'a> = HashMap<&'a str, Kind>;
-struct Scope<'a> { vals: ValScope<'a>, types: TypeScope<'a>}
-type Stack<T> = Vec<T>;
+use crate::semantics;
 
-const EMPTY_KIND: Kind = Kind { lifetimes: 0u8, types: 0u8 };
+use super::semantics::{Stack, Scope, prelude_scope, primitive_scope};
+
 
 pub struct Context {
     /// A stack of variable scopes
-    // pub scopes: Stack<Scope<'a>>,
+    pub scopes: Stack<Scope>,
     /// if false, generate syntactically valid code that may be semantically incorrect
     pub regard_semantics: bool,
     // pub ty: Type,
@@ -39,24 +34,20 @@ pub struct Context {
     pub allow_block_labels: bool,
     /// If for example the cond of an if contains a block,
     /// the block needs to be parenthesized
-    pub parenthesize_block: bool
+    pub parenthesize_block: bool,
+    /// The expected type of the current expression
+    pub expected_type: semantics::Type,
+    /// A place where strings can be stored for use in e.g. variable names
+    pub owned_strings: Vec<String>
 }
-
-// const PRELUDE_SCOPE: Scope = Scope {
-//      vals: [
-     
-//      ].to_iter().collect(), 
-//      types: [
-//          "Send", 
-//          "Sized",
-//          "Sync",
-//      ].to_iter().collect()
-// };
-
 impl Context {
-    pub fn make_context(regard_semantics: bool) -> Self {
+    pub fn make_context(regard_semantics: bool) -> Context {
         Context {
-            // scopes: vec![PRELUDE_SCOPE],
+            scopes: vec![
+                primitive_scope(),
+                prelude_scope(),
+                Scope { owned: true, vals: HashMap::new(), types: HashMap::new(), }
+            ],
             regard_semantics,
             depth: 0,
             allow_type_annotations: true,
@@ -67,10 +58,13 @@ impl Context {
             is_refutable: true,
             allow_range: true,
             allow_block_labels: true,
-            parenthesize_block: false
+            parenthesize_block: false,
+            expected_type: crate::make_type!(Unit),
+            owned_strings: vec![],
         }
     }
 }
+
 
 /// Used to declare certain enum options as only available if certain context flags are set
 #[derive(PartialEq, Debug)]
@@ -90,8 +84,7 @@ macro_rules! with_attrs {
     ($obj: ident { }, $e:expr) => ($e);
     ($obj: ident { $attr:ident = $val:expr $(,$attrs:ident = $vals:expr)* }, $e:expr) => {
         {
-            let old_val = $obj.$attr;
-            $obj.$attr = $val;
+            let old_val = std::mem::replace(&mut $obj.$attr, $val);
             let result = with_attrs!($obj { $($attrs = $vals),* }, $e);
             $obj.$attr = old_val;
             result
@@ -147,4 +140,9 @@ macro_rules! place_expression {
 #[macro_export]
 macro_rules! parens_block {
 ($ctx: ident, $e: expr) => (with_attrs!($ctx { parenthesize_block = true }, $e))
+}
+
+#[macro_export]
+macro_rules! with_type {
+($ctx: ident, $ty: expr, $e: expr) => (with_attrs!($ctx { expected_type = $ty }, $e))
 }
