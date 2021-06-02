@@ -49,7 +49,7 @@ fn main() -> Result<()> {
             .arg(filename)
             .arg("--allow").arg("warnings")
             .arg("--edition").arg("2018")
-            .arg("--output-dir").arg("./output_files/")
+            .arg("--out-dir").arg("./output_files/")
             .output().expect("Error executing compile command")
     } else {
         Command::new("rustfmt").arg(filename)
