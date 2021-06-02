@@ -1,1 +1,0 @@
-static lorem : [[impl 'quux] ; yield move | | try { fn quux () -> [bar ; if match [] { ref mut foo @ ref mut quux => bar * if async move { } { break .. ((- baz :: lorem :: bar = ({ } ,) : (impl lorem :: dolor) . await ,) as & 'baz mut _ , async { }) ; } ? , } { }] { } }] = 'foo : loop { } ; type baz = foo ; crate trait lorem { }

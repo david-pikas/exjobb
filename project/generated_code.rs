@@ -1,1 +1,0 @@
-fn main () -> () { return * foo . ipsum ; } pub trait foo { }

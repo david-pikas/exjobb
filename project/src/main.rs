@@ -38,17 +38,18 @@ fn main() -> Result<()> {
         })?;
     let WrappedFile(ast) = wrapped_ast;
     let ast_string = format!("{:#?}", ast);
-    let ast_filename = "ast.rs";
+    let ast_filename = "./output_files/ast.rs";
     fs::write(ast_filename, &ast_string).expect("Failed writing file");
     code_str = quote!(#ast).to_string();
     println!("{}", code_str);
-    let filename = "generated_code.rs";
+    let filename = "./output_files/generated_code.rs";
     fs::write(filename, &code_str).expect("Failed writing file");
     let compilation_output = if semantically_correct {
         Command::new("rustc")
             .arg(filename)
             .arg("--allow").arg("warnings")
             .arg("--edition").arg("2018")
+            .arg("--output-dir").arg("./output_files/")
             .output().expect("Error executing compile command")
     } else {
         Command::new("rustfmt").arg(filename)
