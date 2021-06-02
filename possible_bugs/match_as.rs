@@ -1,1 +1,0 @@
-fn quux (& 'ipsum self , ...) { let _ = if (let baz = move | | -> [& mut [((unsafe fn (impl bar + dolor + bar , [* mut _] , ...))) ; * 'foo : for dolor in foo { } - ('foo : loop { }) () = ipsum . await as lorem]] { } as impl foo as lorem) { } else { let box ipsum = match [] { box ref dolor @ box _ => baz , } as * const [[dolor ; 'quux : { }] ; continue] } ; }
