@@ -1,8 +1,11 @@
-use arbitrary::{Result, Unstructured};
+use arbitrary::Unstructured;
 use quote::quote;
 use rand::{distributions, prelude::Distribution, thread_rng, Rng};
 use std::process::Command;
 use std::{env, fs, str, thread};
+
+mod parser_wrapper;
+use parser_wrapper::parse;
 
 #[macro_use]
 mod context_arbitrary;
@@ -19,7 +22,7 @@ use syn_arbitrary::make_wrapped_file;
 
 use crate::syn_arbitrary::WrappedFile;
 
-fn main() -> Result<()> {
+fn main() -> Result<(), MainError> {
     let semantically_correct: bool = Some(String::from("syntax")) != env::args().nth(1);
     let code_str: String;
     
@@ -44,20 +47,18 @@ fn main() -> Result<()> {
     println!("{}", code_str);
     let filename = "./output_files/generated_code.rs";
     fs::write(filename, &code_str).expect("Failed writing file");
-    let compilation_output = if semantically_correct {
-        Command::new("rustc")
+    if semantically_correct {
+        let compilation_output = Command::new("rustc")
             .arg(filename)
             .arg("--allow").arg("warnings")
             .arg("--edition").arg("2018")
             .arg("--out-dir").arg("./output_files/")
-            .output().expect("Error executing compile command")
+            .output().expect("Error executing compile command");
+        println!("{}", str::from_utf8(&compilation_output.stdout).unwrap());
+        println!("{}", str::from_utf8(&compilation_output.stderr).unwrap());
     } else {
-        Command::new("rustfmt").arg(filename)
-            .output().expect("Error executing compile command")
-                
+        parse(filename)?;
     };
-    println!("{}", str::from_utf8(&compilation_output.stdout).unwrap());
-    println!("{}", str::from_utf8(&compilation_output.stderr).unwrap());
     return Ok(())
 }
 
@@ -69,4 +70,22 @@ where
     let builder = thread::Builder::new().stack_size(stack_space);
     let handler = builder.spawn(closure).unwrap();
     return handler.join().unwrap();
+}
+
+#[derive(Debug)]
+enum MainError {
+    GenError(context_arbitrary::GenerationError),
+    ParserError(parser_wrapper::ParserError)
+}
+
+impl From<context_arbitrary::GenerationError> for MainError {
+    fn from(e: context_arbitrary::GenerationError) -> Self {
+        MainError::GenError(e)
+    }
+}
+
+impl From<parser_wrapper::ParserError> for MainError {
+    fn from(e: parser_wrapper::ParserError) -> Self {
+        MainError::ParserError(e)
+    }
 }

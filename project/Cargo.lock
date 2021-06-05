@@ -11,6 +11,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "annotate-snippets"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d78ea013094e5ea606b1c05fe35f1dd7ea1eb1ea259908d040b25bd5ec677ee5"
+
+[[package]]
 name = "arbitrary"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -21,6 +27,17 @@ name = "arrayvec"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5a2f58b0bb10c380af2b26e57212856b8c9a59e0925b4c20f4a174a49734eaf7"
+
+[[package]]
+name = "atty"
+version = "0.2.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d9b39be18770d11421cdb1b9947a45dd3f37e93092cbf377614828a319d5fee8"
+dependencies = [
+ "hermit-abi",
+ "libc",
+ "winapi",
+]
 
 [[package]]
 name = "autocfg"
@@ -161,6 +178,15 @@ checksum = "501466ecc8a30d1d3b7fc9229b122b2ce8ed6e9d9223f1138d4babb253e51817"
 dependencies = [
  "typenum",
  "version_check",
+]
+
+[[package]]
+name = "getopts"
+version = "0.2.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "14dbbfd5c71d70241ecf9e6f13737f7b5ce823821063188d7e46c41d371eebd5"
+dependencies = [
+ "unicode-width",
 ]
 
 [[package]]
@@ -514,6 +540,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustc-ap-rustc_errors"
+version = "720.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f4440b50e893a837f82633ca3b138c04d4655265c4250cd436397b9978a6fda6"
+dependencies = [
+ "annotate-snippets",
+ "atty",
+ "rustc-ap-rustc_data_structures",
+ "rustc-ap-rustc_lint_defs",
+ "rustc-ap-rustc_macros",
+ "rustc-ap-rustc_serialize",
+ "rustc-ap-rustc_span",
+ "termcolor",
+ "termize",
+ "tracing",
+ "unicode-width",
+ "winapi",
+]
+
+[[package]]
+name = "rustc-ap-rustc_feature"
+version = "720.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3e2df9e395d9c1c789e6010e850dd2a2489bd3b979e3cd895fecc692f300906f"
+dependencies = [
+ "rustc-ap-rustc_data_structures",
+ "rustc-ap-rustc_span",
+]
+
+[[package]]
+name = "rustc-ap-rustc_fs_util"
+version = "720.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c25065b37cbd6735e9c75d4ff4b47c13cb40478a78f52d865cc307d6490b02cf"
+
+[[package]]
 name = "rustc-ap-rustc_graphviz"
 version = "720.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -540,6 +602,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustc-ap-rustc_lint_defs"
+version = "720.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d87ef9a02174a58e7c90a4d41770430e0ceff80cf9156dd7edb00364f49f363b"
+dependencies = [
+ "rustc-ap-rustc_ast",
+ "rustc-ap-rustc_data_structures",
+ "rustc-ap-rustc_macros",
+ "rustc-ap-rustc_serialize",
+ "rustc-ap-rustc_span",
+ "rustc-ap-rustc_target",
+ "tracing",
+]
+
+[[package]]
 name = "rustc-ap-rustc_macros"
 version = "720.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -552,6 +629,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustc-ap-rustc_parse"
+version = "720.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3ba5ceb9dcd7e7de15fe396e738d2a5c88528587bcc5f57396e2ae102b3c7e94"
+dependencies = [
+ "bitflags",
+ "rustc-ap-rustc_ast",
+ "rustc-ap-rustc_ast_pretty",
+ "rustc-ap-rustc_data_structures",
+ "rustc-ap-rustc_errors",
+ "rustc-ap-rustc_feature",
+ "rustc-ap-rustc_lexer",
+ "rustc-ap-rustc_session",
+ "rustc-ap-rustc_span",
+ "smallvec",
+ "tracing",
+ "unicode-normalization",
+]
+
+[[package]]
 name = "rustc-ap-rustc_serialize"
 version = "720.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -559,6 +656,28 @@ checksum = "7def27ea1c7b7e6e068c5b1a4501db0124d645088cf416e026d025be94d537ea"
 dependencies = [
  "indexmap",
  "smallvec",
+]
+
+[[package]]
+name = "rustc-ap-rustc_session"
+version = "720.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "46ad0afd0b2b21ee32c67d45df5b82de7c611a84424143b197fddcd57f4bf298"
+dependencies = [
+ "bitflags",
+ "getopts",
+ "num_cpus",
+ "rustc-ap-rustc_ast",
+ "rustc-ap-rustc_data_structures",
+ "rustc-ap-rustc_errors",
+ "rustc-ap-rustc_feature",
+ "rustc-ap-rustc_fs_util",
+ "rustc-ap-rustc_lint_defs",
+ "rustc-ap-rustc_macros",
+ "rustc-ap-rustc_serialize",
+ "rustc-ap-rustc_span",
+ "rustc-ap-rustc_target",
+ "tracing",
 ]
 
 [[package]]
@@ -579,6 +698,21 @@ dependencies = [
  "sha2",
  "tracing",
  "unicode-width",
+]
+
+[[package]]
+name = "rustc-ap-rustc_target"
+version = "720.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "73ce79d9f7856f9e2ece78f8db5200d7d8241261e8a679fc145bf11154ab8660"
+dependencies = [
+ "bitflags",
+ "rustc-ap-rustc_data_structures",
+ "rustc-ap-rustc_index",
+ "rustc-ap-rustc_macros",
+ "rustc-ap-rustc_serialize",
+ "rustc-ap-rustc_span",
+ "tracing",
 ]
 
 [[package]]
@@ -623,6 +757,9 @@ dependencies = [
  "rustc-ap-rustc_ast",
  "rustc-ap-rustc_ast_pretty",
  "rustc-ap-rustc_data_structures",
+ "rustc-ap-rustc_errors",
+ "rustc-ap-rustc_parse",
+ "rustc-ap-rustc_session",
  "rustc-ap-rustc_span",
  "scoped-tls",
  "syn",
@@ -729,6 +866,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "termcolor"
+version = "1.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2dfed899f0eb03f32ee8c6a0aabdb8a7949659e3466561fc0adf54e26d88c5f4"
+dependencies = [
+ "winapi-util",
+]
+
+[[package]]
+name = "termize"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1706be6b564323ce7092f5f7e6b118a14c8ef7ed0e69c8c5329c914a9f101295"
+dependencies = [
+ "libc",
+ "winapi",
+]
+
+[[package]]
+name = "tinyvec"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5b5220f05bb7de7f3f53c7c065e1199b3172696fe2db9f9c4d8ad9b4ee74c342"
+dependencies = [
+ "tinyvec_macros",
+]
+
+[[package]]
+name = "tinyvec_macros"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cda74da7e1a664f795bb1f8a87ec406fb89a02522cf6e50620d016add6dbbf5c"
+
+[[package]]
 name = "tracing"
 version = "0.1.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -765,6 +936,15 @@ name = "typenum"
 version = "1.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "879f6906492a7cd215bfa4cf595b600146ccfac0c79bcbd1f3000162af5e8b06"
+
+[[package]]
+name = "unicode-normalization"
+version = "0.1.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d54590932941a9e9266f0832deed84ebe1bf2e4c9e4a3554d393d18f5e854bf9"
+dependencies = [
+ "tinyvec",
+]
 
 [[package]]
 name = "unicode-width"
@@ -805,6 +985,15 @@ name = "winapi-i686-pc-windows-gnu"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ac3b87c63620426dd9b991e5ce0329eff545bccbbb34f3be09ff6fb6ab51b7b6"
+
+[[package]]
+name = "winapi-util"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "70ec6ce85bb158151cae5e5c87f95a8e97d2c0c4b001223f33a334e3ce5de178"
+dependencies = [
+ "winapi",
+]
 
 [[package]]
 name = "winapi-x86_64-pc-windows-gnu"

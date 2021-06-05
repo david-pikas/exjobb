@@ -1,13 +1,26 @@
 use arbitrary::Arbitrary;
-pub use arbitrary::{Result, Unstructured};
+pub use arbitrary::Unstructured;
 use std::marker::PhantomData;
 pub trait ContextArbitrary<'a, Ctx>: Sized {
     fn c_arbitrary(ctx: &mut Ctx, u: &mut Unstructured<'a>) -> Result<Self>;
 }
 
+#[derive(Clone, Debug)]
+pub enum GenerationError {
+    ArbitraryError(arbitrary::Error),
+    /// If it isn't possible to produce a value of an appropriate type,
+    AppropriateTypeFailure,
+}
+
+impl From<arbitrary::Error> for GenerationError {
+    fn from(e: arbitrary::Error) -> Self { GenerationError::ArbitraryError(e) }
+}
+
+pub type Result<T> = std::result::Result<T, GenerationError>;
+
 pub struct FiniteF64(pub f64);
 impl<'a> Arbitrary<'a> for FiniteF64 {
-    fn arbitrary(u: &mut Unstructured<'a>) -> Result<Self> {
+    fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
         let mut data: f64 = Arbitrary::arbitrary(u)?;
         while !data.is_finite() {
             data = Arbitrary::arbitrary(u)?;
@@ -22,7 +35,7 @@ pub fn unwrap_finite_f64(FiniteF64(f64): FiniteF64) -> f64 {
 
 // Verision of Unstructured::choose that doesn't borrow it's argument
 // Modified from: https://docs.rs/arbitrary/0.4.7/src/arbitrary/unstructured.rs.html#366-373
-pub fn choose_consume<'a, T, I>(u: &mut Unstructured<'a>, mut choices: I) -> Result<T> 
+pub fn choose_consume<'a, T, I>(u: &mut Unstructured<'a>, mut choices: I) -> arbitrary::Result<T> 
 where I: ExactSizeIterator<Item = T> {
     assert!(
         choices.len() > 0,
