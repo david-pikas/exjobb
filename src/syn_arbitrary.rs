@@ -1,9 +1,11 @@
-use arbitrary::{Arbitrary, Result};
+use arbitrary::Arbitrary;
 use std::iter::{self, empty};
 use syn::{Abi, AngleBracketedGenericArguments, Arm, AttrStyle, Attribute, BareFnArg, BinOp, Block, Expr, ExprArray, ExprAssign, ExprAssignOp, ExprAsync, ExprAwait, ExprBinary, ExprBlock, ExprBox, ExprBreak, ExprCall, ExprCast, ExprClosure, ExprContinue, ExprField, ExprForLoop, ExprGroup, ExprIf, ExprIndex, ExprLet, ExprLit, ExprLoop, ExprMatch, ExprMethodCall, ExprParen, ExprPath, ExprRange, ExprReference, ExprRepeat, ExprReturn, ExprStruct, ExprTry, ExprTryBlock, ExprTuple, ExprType, ExprUnary, ExprWhile, ExprYield, Field, FieldPat, FieldValue, Fields, FieldsNamed, FieldsUnnamed, File, FnArg, GenericArgument, GenericMethodArgument, GenericParam, Generics, Ident, Index, Item, ItemConst, ItemEnum, ItemFn, ItemStatic, ItemTrait, ItemType, Label, Lifetime, Lit, Local, Member, MethodTurbofish, Pat, PatBox, PatIdent, PatLit, PatOr, PatPath, PatRange, PatReference, PatRest, PatSlice, PatStruct, PatTuple, PatTupleStruct, PatType, PatWild, PathArguments, PathSegment, RangeLimits, Receiver, ReturnType, Signature, Stmt, Token, TraitBound, TraitBoundModifier, TraitItem, TraitItemConst, TraitItemMethod, TraitItemType, Type, TypeArray, TypeBareFn, TypeGroup, TypeImplTrait, TypeInfer, TypeParamBound, TypeParen, TypePath, TypePtr, TypeReference, TypeSlice, TypeTraitObject, TypeTuple, UnOp, Variadic, Variant, VisPublic, Visibility, parse_quote, parse_str, punctuated::Punctuated, token::{Brace, Bracket, Group, Paren}};
 use quote::quote;
 
 use super::context_arbitrary::*;
+use super::context_arbitrary as context_arbitrary;
+use super::context_arbitrary::Result;
 
 use super::context::*;
 
@@ -20,6 +22,10 @@ pub struct WrappedFile(pub File);
 unsafe impl Send for WrappedFile {}
 pub fn make_wrapped_file<'a>(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<WrappedFile> {
    Ok(WrappedFile(c_arbitrary(ctx, u)?))
+}
+
+fn ok<T>(a: T) -> context_arbitrary::Result<T> {
+   Ok(a)
 }
 
 fn dummy_span() -> proc_macro2::Span {
@@ -76,7 +82,7 @@ fn parenthesize_expr(presc: u8, e: Expr) -> Expr {
             expr: Box::new(e),
         });
     } else {
-       return e;
+        return e;
     }
 }
 
@@ -115,7 +121,7 @@ fn prescedence(e: &Expr) -> u8 {
         Expr::Break(_) | Expr::Return(_) => 0,
         // TODO: find out what prescedence box should ACTUALLY be
         Expr::Box(_) => 0,
-        Expr::Loop(l) if l.label.is_some() => 0,
+        // Expr::Loop(l) if l.label.is_some() => 0,
         Expr::Group(g) => prescedence(&g.expr),
         // TODO: loops might only need to be parenthesized if they're the lhs 
         Expr::While(_) | Expr::ForLoop(_) | Expr::Loop(_) => 0,
@@ -419,21 +425,43 @@ impl From<semantics::Type> for syn::Type {
                 elems: ty.type_args.into_iter().map::<syn::Type,_>(From::from).collect()
             })
         } else {
-            let name = ty.name;
+            let ty_path = make_type_path(ty);
             syn::Type::Path(TypePath {
                 qself: None,
-                path: syn::Path {
-                    leading_colon: None,
-                    segments: vec![
-                        PathSegment {
-                            ident: parse_quote!(#name),
-                            arguments: empty_path_args()
-                        }
-                    ].into_iter().collect()
-                }
+                path: ty_path
             })
         }
     }
+}
+
+fn make_type_path(ty: semantics::Type) -> syn::Path {
+    let name = ty.name;
+    let path_args =
+        if ty.type_args.is_empty() && ty.lt_args.is_empty() {
+            PathArguments::None
+        } else {
+            PathArguments::AngleBracketed(AngleBracketedGenericArguments {
+                colon2_token: None,
+                lt_token: parse_quote!(<),
+                args: ty.lt_args.into_iter().map(|semantics::Lifetime(lt)| GenericArgument::Lifetime(syn::Lifetime {
+                    apostrophe: dummy_span(),
+                    ident: parse_quote!(#lt),
+                })).chain(ty.type_args.into_iter().map(|ty| GenericArgument::Type(ty.into())))
+                   .collect(),
+                gt_token: parse_quote!(>),
+            })
+    
+        };
+   syn::Path {
+       leading_colon: None,
+       segments: vec![
+           PathSegment {
+               ident: parse_quote!(#name),
+               arguments: path_args
+           }
+       ].into_iter().collect()
+   }
+   
 }
 
 impl<'a, T, P, Ctx> ContextArbitrary<'a, Ctx> for Punctuated<T, P>
@@ -510,7 +538,7 @@ impl<'a> ContextArbitrary<'a, Context> for File {
 }
 
 fn make_main<'a>(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<ItemFn> {
-    let enum_choices = [
+    let enum_choices  = [
         || (make_type!(()), ReturnType::Default),
         || (make_type!(()), ReturnType::Type(parse_quote!(->), parse_quote!(()))),
         || (make_type!(Result[#(()),Error]),
@@ -1039,11 +1067,11 @@ impl<'a> ContextArbitrary<'a, Context> for Signature {
 impl<'a> ContextArbitrary<'a, Context> for Abi {
     fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
         let possible_names = [
-            |_,_| Ok(None),
-            |_,_| Ok(Some(parse_quote!("Rust"))),
-            |_,_| Ok(Some(parse_quote!("C"))),
+            |_,_| ok(None),
+            |_,_| ok(Some(parse_quote!("Rust"))),
+            |_,_| ok(Some(parse_quote!("C"))),
             |_,u| { let name: String = Arbitrary::arbitrary(u)?;
-                    Ok(Some(parse_quote!(#name))) }
+                    ok(Some(parse_quote!(#name))) }
         ];
         Ok(Abi {
             extern_token: parse_quote!(extern),
@@ -1586,17 +1614,31 @@ impl<'a> ContextArbitrary<'a, Context> for ExprTry {
 
 impl<'a> ContextArbitrary<'a, Context> for ExprStruct {
     fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
-        let named_fields: bool = Arbitrary::arbitrary(u)?;
-        let rest: Option<Box<Expr>> = place_expression!(ctx, c_arbitrary(ctx, u)?);
-        let dot2_token = if rest.is_some() { parse_quote!(..) } else { None };
-        Ok(ExprStruct {
-            attrs: vec![],
-            path: c_arbitrary(ctx, u)?,
-            brace_token: Brace { span: dummy_span() },
-            fields: name_fields!(ctx, named_fields, c_arbitrary(ctx, u)?),
-            dot2_token,
-            rest
-        })
+        if ctx.regard_semantics {
+            // TODO: add unnamed fields
+            todo!();
+            // let (path, fields) = pick_stuct_that();
+            // Ok(ExprStruct {
+            //     attrs: vec![],
+            //     path,
+            //     brace_token: Brace { span: dummy_span() },
+            //     fields: (),
+            //     dot2_token: (),
+            //     rest: (),
+            // })
+        } else {
+            let named_fields: bool = Arbitrary::arbitrary(u)?;
+            let rest: Option<Box<Expr>> = place_expression!(ctx, c_arbitrary(ctx, u)?);
+            let dot2_token = if rest.is_some() { parse_quote!(..) } else { None };
+            Ok(ExprStruct {
+                attrs: vec![],
+                path: c_arbitrary(ctx, u)?,
+                brace_token: Brace { span: dummy_span() },
+                fields: name_fields!(ctx, named_fields, c_arbitrary(ctx, u)?),
+                dot2_token,
+                rest
+            })
+        }
     }
 }
 
@@ -1625,8 +1667,8 @@ impl<'a> ContextArbitrary<'a, Context> for ExprRepeat {
     fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
         // TOOD: substitute this with a propper way to generate static expressions
         let enum_choices = [
-            |ctx, u| Ok(Expr::Lit(c_arbitrary(ctx, u)?)),
-            |ctx, u| Ok(Expr::Path(c_arbitrary(ctx, u)?)),
+            |ctx, u| ok(Expr::Lit(c_arbitrary(ctx, u)?)),
+            |ctx, u| ok(Expr::Path(c_arbitrary(ctx, u)?)),
         ];
         let choice = u.choose(&enum_choices)?;
         let len = Box::new(choice(ctx, u)?);
@@ -2047,6 +2089,7 @@ impl<'a> ContextArbitrary<'a, Context> for ExprTuple {
     }
 }
 
+
 impl<'a> ContextArbitrary<'a, Context> for ExprPath {
     fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
         let path; 
@@ -2057,12 +2100,14 @@ impl<'a> ContextArbitrary<'a, Context> for ExprPath {
                 |_,ty| ty.matches(&expected_type)
             )?;
             path = syn::Path {
-                    segments: iter::once(PathSegment{
-                    ident: parse_quote!(#var),
-                    arguments: empty_path_args(),
-                }).collect(),
-                leading_colon: None
-            }
+                leading_colon: None,
+                segments: vec![
+                    PathSegment {
+                        ident: parse_quote!(#var),
+                        arguments: PathArguments::None
+                    }
+                ].into_iter().collect()
+            };
         } else {
             path = c_arbitrary(ctx, u)?;
         }
@@ -2072,15 +2117,6 @@ impl<'a> ContextArbitrary<'a, Context> for ExprPath {
             path
         })
     }
-}
-
-fn empty_path_args() -> PathArguments {
-   PathArguments::AngleBracketed(AngleBracketedGenericArguments {
-      colon2_token: None,
-      lt_token: parse_quote!(<),
-      args: (vec![] as Vec<GenericArgument>).into_iter().collect(),
-      gt_token: parse_quote!(>),
-   })
 }
 
 impl<'a> ContextArbitrary<'a, Context> for Lit {

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use arbitrary::Unstructured;
-use crate::context_arbitrary::choose_consume;
+use crate::context_arbitrary::{GenerationError, choose_consume};
+use crate::context_arbitrary as context_arbitrary;
 
 use super::context::Context;
 
@@ -8,7 +9,7 @@ use super::context::Context;
 #[allow(dead_code)]
 pub enum Mutability { Immutable, Unnasigned, Mutable }
 #[derive(PartialEq, Clone)]
-pub struct Lifetime(String);
+pub struct Lifetime(pub String);
 #[derive(PartialEq, Clone)]
 pub struct Type {
     pub name: String,
@@ -20,10 +21,23 @@ pub struct Type {
 }
 #[derive(PartialEq, Clone)]
 pub struct Kind { pub lifetimes: u8, pub types: u8 }
+#[derive(PartialEq, Clone)]
+pub struct Field { pub visible: bool, pub ty: Type }
+#[derive(PartialEq, Clone)]
+pub struct Struct {
+    pub ty: Type,
+    pub fields: HashMap<String, Field>
+}
 pub type ValScope = HashMap<String, Type>;
 pub type TypeScope = HashMap<String, Kind>;
+pub type StructScope = HashMap<String, Struct>;
 #[derive(PartialEq, Clone)]
-pub struct Scope { pub owned: bool, pub vals: ValScope, pub types: TypeScope}
+pub struct Scope {
+    pub owned: bool,
+    pub vals: ValScope,
+    pub types: TypeScope,
+    pub structs: StructScope,
+}
 pub type Stack<T> = Vec<T>;
 
 impl Type {
@@ -35,7 +49,12 @@ impl Type {
 
 #[allow(dead_code)]
 pub fn push_scope(ctx: &mut Context) {
-    ctx.scopes.push(Scope { owned: true, vals: HashMap::new(), types: HashMap::new() });
+    ctx.scopes.push(Scope {
+        owned: true,
+        vals: HashMap::new(),
+        types: HashMap::new(),
+        structs: HashMap::new(),
+    });
 }
 
 #[allow(dead_code)]
@@ -80,20 +99,24 @@ pub fn pick_var_that<'a, 'b, F>(
     ctx: &'b mut Context,
     u: &'b mut Unstructured<'a>,
     pred: F
-) -> arbitrary::Result<(&'b String, &'b Type)>
+) -> context_arbitrary::Result<(&'b String, &'b Type)>
 where F: Fn(&String, &Type) -> bool {
     let scope = u.choose(&ctx.scopes)?;
     let vars: Vec<(&String, &Type)> = scope.vals.iter().filter(|(n,t)| pred(n,t)).collect();
-    let &(name, ty) = u.choose(&vars)?;
-    return Ok((name, ty));
+    if vars.is_empty() {
+        Err(GenerationError::AppropriateTypeFailure)
+    } else {
+        let &(name, ty) = u.choose(&vars)?;
+        Ok((name, ty))
+    }
 }
 
 #[allow(dead_code)]
 pub fn pick_var<'a, 'b>(
     ctx: &'b mut Context,
     u: &'b mut Unstructured<'a>,
-) -> arbitrary::Result<(&'b String, &'b Type)> {
-    return pick_var_that(ctx, u, |_,_| true);
+) -> context_arbitrary::Result<(&'b String, &'b Type)> {
+    pick_var_that(ctx, u, |_,_| true)
 }
 
 
@@ -236,6 +259,35 @@ macro_rules! make_kind {
     };
 }
 
+#[allow(unused_macros)]
+macro_rules! make_struct {
+    ($name:ident$([$($gen:tt)*])? { $($fields:tt)* }) =>
+        (make_struct!($name::name$([$($gen)*])? { $($fields)* }));
+    ($ty:ident :: $name:ident $([$($gen:tt)*])? { $($fields:tt)* }) =>
+        ((stringify!($name).to_string(), crate::semantics::Struct {
+            ty: make_type!($ty$({$($gen)*})?),
+            fields: parse_fields!(($fields)*)
+        }))
+}
+
+#[allow(unused_macros)]
+macro_rules! parse_fields {
+    ($(,$fields:expr)*;$(pub)? $name:ident : $ty:ident$({$($gen:tt)*})?$([$($arg:tt)*])?, $($rest:tt)*) => 
+        (parse_fields!($(,$fields:expr)*;$(pub)? $name #($ty$({$($get)*})?$([$($arg:tt)*])?), $($rest)*));
+    ($(,$fields:expr)*;pub $name:ident : #($($ty:tt)*), $($rest:tt)*) => {
+        parse_fields!($(,$fields)*, crate::semantics::Field {
+            visible: true,
+            ty: make_type!($($ty)*; $($rest)*)
+        }; $($rest)*);
+    };
+    ($(,$fields:expr)*;$name:ident : #($($ty:tt)*), $($rest:tt)*) => {
+        parse_fields!($(,$fields)*, crate::semantics::Field {
+            visible: false,
+            ty: make_type!($($ty)*; $($rest)*)
+        }; $($rest)*);
+    };
+}
+
 pub fn prelude_scope() -> Scope {
     Scope {
         owned: false,
@@ -275,7 +327,8 @@ pub fn prelude_scope() -> Scope {
             make_kind!(String),
             make_kind!(ToString),
             make_kind!(Vec{1}),
-        ].iter().cloned().collect()
+        ].iter().cloned().collect(),
+        structs: HashMap::new()
     }
 }
 
@@ -283,6 +336,7 @@ pub fn primitive_scope() -> Scope {
     Scope {
         owned: false,
         vals: HashMap::new(),
+        structs: HashMap::new(),
         types: [
             make_kind!(bool),
             make_kind!(u8),
@@ -310,7 +364,7 @@ pub fn primitive_scope() -> Scope {
             make_kind!((10;)),
             make_kind!((11;)),
             make_kind!((12;))
-        ].iter().cloned().collect()
+        ].iter().cloned().collect(),
     }
 }
 
