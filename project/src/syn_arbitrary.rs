@@ -1,7 +1,8 @@
 use arbitrary::Arbitrary;
-use std::iter::{self, empty};
-use syn::{Abi, AngleBracketedGenericArguments, Arm, AttrStyle, Attribute, BareFnArg, BinOp, Block, Expr, ExprArray, ExprAssign, ExprAssignOp, ExprAsync, ExprAwait, ExprBinary, ExprBlock, ExprBox, ExprBreak, ExprCall, ExprCast, ExprClosure, ExprContinue, ExprField, ExprForLoop, ExprGroup, ExprIf, ExprIndex, ExprLet, ExprLit, ExprLoop, ExprMatch, ExprMethodCall, ExprParen, ExprPath, ExprRange, ExprReference, ExprRepeat, ExprReturn, ExprStruct, ExprTry, ExprTryBlock, ExprTuple, ExprType, ExprUnary, ExprWhile, ExprYield, Field, FieldPat, FieldValue, Fields, FieldsNamed, FieldsUnnamed, File, FnArg, GenericArgument, GenericMethodArgument, GenericParam, Generics, Ident, Index, Item, ItemConst, ItemEnum, ItemFn, ItemStatic, ItemTrait, ItemType, Label, Lifetime, Lit, Local, Member, MethodTurbofish, Pat, PatBox, PatIdent, PatLit, PatOr, PatPath, PatRange, PatReference, PatRest, PatSlice, PatStruct, PatTuple, PatTupleStruct, PatType, PatWild, PathArguments, PathSegment, RangeLimits, Receiver, ReturnType, Signature, Stmt, Token, TraitBound, TraitBoundModifier, TraitItem, TraitItemConst, TraitItemMethod, TraitItemType, Type, TypeArray, TypeBareFn, TypeGroup, TypeImplTrait, TypeInfer, TypeParamBound, TypeParen, TypePath, TypePtr, TypeReference, TypeSlice, TypeTraitObject, TypeTuple, UnOp, Variadic, Variant, VisPublic, Visibility, parse_quote, parse_str, punctuated::Punctuated, token::{Brace, Bracket, Group, Paren}};
+use std::{collections::HashSet, iter::{self, empty}};
+use syn::{Abi, AngleBracketedGenericArguments, Arm, AttrStyle, Attribute, BareFnArg, BinOp, Block, Expr, ExprArray, ExprAssign, ExprAssignOp, ExprAsync, ExprAwait, ExprBinary, ExprBlock, ExprBox, ExprBreak, ExprCall, ExprCast, ExprClosure, ExprContinue, ExprField, ExprForLoop, ExprGroup, ExprIf, ExprIndex, ExprLet, ExprLit, ExprLoop, ExprMatch, ExprMethodCall, ExprParen, ExprPath, ExprRange, ExprReference, ExprRepeat, ExprReturn, ExprStruct, ExprTry, ExprTryBlock, ExprTuple, ExprType, ExprUnary, ExprWhile, ExprYield, Field, FieldPat, FieldValue, Fields, FieldsNamed, FieldsUnnamed, File, FnArg, GenericArgument, GenericMethodArgument, GenericParam, Generics, Ident, Index, Item, ItemConst, ItemEnum, ItemFn, ItemStatic, ItemTrait, ItemType, Label, Lifetime, Lit, Local, Member, MethodTurbofish, Pat, PatBox, PatIdent, PatLit, PatOr, PatPath, PatRange, PatReference, PatRest, PatSlice, PatStruct, PatTuple, PatTupleStruct, PatType, PatWild, PathArguments, PathSegment, RangeLimits, Receiver, ReturnType, Signature, Stmt, Token, TraitBound, TraitBoundModifier, TraitItem, TraitItemConst, TraitItemMethod, TraitItemType, Type, TypeArray, TypeBareFn, TypeGroup, TypeImplTrait, TypeInfer, TypeParamBound, TypeParen, TypePath, TypePtr, TypeReference, TypeSlice, TypeTraitObject, TypeTuple, UnOp, Variadic, Variant, VisPublic, VisRestricted, Visibility, parse_quote, parse_str, punctuated::Punctuated, token::{Brace, Bracket, Group, Paren}};
 use quote::quote;
+use lazy_static::lazy_static;
 
 use super::context_arbitrary::*;
 use super::context_arbitrary as context_arbitrary;
@@ -12,9 +13,8 @@ use super::context::*;
 use super::semantics as semantics;
 use super::semantics::*;
 
-// use add_depth::*;
 
-use Flag::*;
+// use add_depth::*;
 
 const MAX_DEPTH: usize = 20;
 
@@ -33,25 +33,38 @@ fn dummy_span() -> proc_macro2::Span {
     return dummy_token.span;
 }
 
-type ChoiceClosure<'a, T> = Box<dyn Fn(&mut Context, &mut Unstructured<'a>) -> Result<T>>; 
-type FlaggedClosure<'a, T> = (Vec<Flag>, ChoiceClosure<'a, T>);
-
-fn filter_flags<'a, T, I, P>(flagged_closures: I, pred: P) -> Vec<ChoiceClosure<'a, T>>
-where T: Sized, I: IntoIterator<Item = FlaggedClosure<'a, T>>, P: Fn(Vec<Flag>) -> bool {
-   flagged_closures.into_iter().filter_map(|(flags, cl)| {
-       if pred(flags) {
-           Some(cl)
-       } else {
-           None
-       }
-   }).collect()
+macro_rules! guarded_lazy_choose {
+   ($u:ident, { $($guard:expr => $choice:expr),*$(,)? }) => {
+      (|| {
+         let mut len = 0;
+         let mut conds = vec![];
+         $(conds.push($guard);
+           if *conds.last().unwrap() {
+               len += 1;
+           }
+         )*
+         let choice = $u.int_in_range(0..=(len-1))?;
+         let mut clause = 0;
+         let mut i = 0;
+         $(if choice == clause {
+               return Ok($choice); 
+           }
+           if conds[i] {
+               clause += 1;
+           }
+           i += 1;
+         )*
+         // purely to supress warnings about the variables being set but never read
+         std::mem::drop(clause);
+         std::mem::drop(i);
+         return Err(GenerationError::ArbitraryError(arbitrary::Error::EmptyChoose))
+      })()
+   };
 }
 
-macro_rules! flagged {
-   ([], $closure:expr) =>
-      ((vec!(), Box::new($closure)));
-   ([$fst_flag:expr $(, $flags:expr)*], $closure:expr) =>
-      ((vec!($fst_flag $(, $flags)*), Box::new($closure)))
+macro_rules! lazy_choose {
+    ($u:ident, { $($choice:expr),*$(,)? })
+      => (guarded_lazy_choose!($u, { $(true => $choice),*}))
 }
 
 macro_rules! parens_ex {
@@ -110,7 +123,7 @@ fn prescedence(e: &Expr) -> u8 {
     match e {
         Expr::Path(_) => 18,
         Expr::MethodCall(_) => 17,
-        Expr::Field(_) => 16,
+        Expr::Field(_) | Expr::Await(_) => 16,
         Expr::Call(_) | Expr::Index(_) => 15,
         Expr::Try(_) => 14,
         Expr::Unary(_) => 13,
@@ -493,40 +506,16 @@ fn unwrap_nep<T, P>(NEPunctuated(contents): NEPunctuated<T, P>) -> Punctuated<T,
     contents
 }
 
-// impl<'a> ContextArbitrary<'a, Context> for WrappedFile {
-//     fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
-//         Ok(WrappedFile(File {
-//             shebang: None,
-//             // TODO: Possibly add attributes?
-//             attrs: vec![],
-//             items: unwrap_nev(c_arbitrary(ctx, u)?),
-//         }))
-//     }
-// }
-
 impl<'a> ContextArbitrary<'a, Context> for File {
     fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
        let items: Vec<syn::Item>;
-       let attrs: Vec<Attribute>;
-       if ctx.regard_semantics {
-           if Arbitrary::arbitrary(u)? {
-               attrs = vec![Attribute {
-                   pound_token: parse_quote!(#),
-                   style: AttrStyle::Inner(parse_quote!(!)),
-                   bracket_token: Bracket { span: dummy_span() },
-                   path: parse_quote!(no_main),
-                   tokens: quote!(),
-               }];
-               items = unwrap_nev(c_arbitrary(ctx, u)?)
-           } else {
-               attrs = vec![];
-               let main = Item::Fn(make_main(ctx, u)?);
-               items = iter::once(Ok(main))
-                   .chain(c_arbitrary_iter(ctx, u))
-                   .collect::<Result<Vec<syn::Item>>>()?;
-           }
+       let attrs = crate_attrs(ctx, u)?;
+       if ctx.regard_semantics && ctx.has_main {
+           let main = Item::Fn(make_main(ctx, u)?);
+           items = iter::once(Ok(main))
+               .chain(c_arbitrary_iter(ctx, u))
+               .collect::<Result<Vec<syn::Item>>>()?;
        } else {
-           attrs = vec![];
            items = unwrap_nev(c_arbitrary(ctx, u)?);
        }
        Ok(File {
@@ -537,14 +526,37 @@ impl<'a> ContextArbitrary<'a, Context> for File {
     }
 }
 
+fn crate_attrs<'a>(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Vec<Attribute>> {
+   fn wrap_attr(path: syn::Path) -> Attribute {
+      Attribute {
+          pound_token: parse_quote!(#),
+          style: AttrStyle::Inner(parse_quote!(!)),
+          bracket_token: Bracket { span: dummy_span() },
+          path,
+          tokens: quote!(),
+      }
+   }
+   let mut attrs = vec![];
+   if ctx.regard_semantics {
+       lazy_maybe!(u, {
+           ctx.has_main = false;
+           attrs.push(wrap_attr(parse_quote!(no_main)))
+       });
+       lazy_maybe!(u, {
+           ctx.non_ascii = true;
+           attrs.push(parse_quote!(#![feature(non_ascii_idents)]))
+       });
+   }
+   return Ok(attrs);
+}
+
 fn make_main<'a>(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<ItemFn> {
-    let enum_choices  = [
-        || (make_type!(()), ReturnType::Default),
-        || (make_type!(()), ReturnType::Type(parse_quote!(->), parse_quote!(()))),
-        || (make_type!(Result[#(()),Error]),
-            ReturnType::Type(parse_quote!(->), parse_quote!(Result<(), std::io::Error>))),
-    ];
-    let (ret_ty, output) = u.choose(&enum_choices)?();
+    let (ret_ty, output) = lazy_choose!(u,  {
+        (make_type!(()), ReturnType::Default),
+        (make_type!(()), ReturnType::Type(parse_quote!(->), parse_quote!(()))),
+        (make_type!(Result[#(()),Error]),
+         ReturnType::Type(parse_quote!(->), parse_quote!(Result<(), std::io::Error>))),
+    })?;
     let sig = Signature {
             constness: None,
             asyncness: None,
@@ -574,11 +586,12 @@ fn make_main<'a>(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<ItemFn> 
 
 impl<'a> ContextArbitrary<'a, Context> for Item {
     fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
-        let flagged_enum_choices: Vec<FlaggedClosure<Item>> = vec![
-            flagged!([], |ctx, u| Ok(Item::Fn(c_arbitrary(ctx, u)?))),
-            flagged!([], |ctx, u| Ok(Item::Type(c_arbitrary(ctx, u)?))),
-            flagged!([], |ctx, u| Ok(Item::Trait(c_arbitrary(ctx, u)?))),
-            flagged!([], |ctx, u| Ok(Item::Enum(c_arbitrary(ctx, u)?))),
+        let top_lev = !ctx.regard_semantics || ctx.is_top_level;
+        not_top_level!(ctx, guarded_lazy_choose!(u,  {
+            true => Item::Fn(c_arbitrary(ctx, u)?),
+            true => Item::Type(c_arbitrary(ctx, u)?),
+            true => Item::Trait(c_arbitrary(ctx, u)?),
+            true => Item::Enum(c_arbitrary(ctx, u)?),
             // TODO:
             // Impl(ItemImpl),
             // Mod(ItemMod),
@@ -588,14 +601,9 @@ impl<'a> ContextArbitrary<'a, Context> for Item {
             // Union(ItemUnion),
             // Use(ItemUse),
             // Intentionally omitted: ExternCrate, ForeignMod, Macro, Verbatim
-            flagged!([TopLevel], |ctx, u| Ok(Item::Static(c_arbitrary(ctx, u)?))),
-            flagged!([TopLevel], |ctx, u| Ok(Item::Const(c_arbitrary(ctx, u)?))),
-        ];
-        let choices = filter_flags(flagged_enum_choices, |flags| {
-            !ctx.regard_semantics || !ctx.is_top_level || !flags.contains(&TopLevel)
-        });
-        let choice = u.choose(&choices)?;
-        return not_top_level!(ctx, choice(ctx, u));
+            top_lev => Item::Static(c_arbitrary(ctx, u)?),
+            top_lev => Item::Const(c_arbitrary(ctx, u)?),
+        }))
     }
 }
 
@@ -627,13 +635,11 @@ impl<'a> ContextArbitrary<'a, Context> for Variant {
 
 impl<'a> ContextArbitrary<'a, Context> for Fields {
     fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
-        let enum_choices = [
-            |ctx, u| Ok(Fields::Named(c_arbitrary(ctx, u)?)),
-            |ctx, u| Ok(Fields::Unnamed(c_arbitrary(ctx, u)?)),
-            |_, _| Ok(Fields::Unit),
-        ];
-        let choice = u.choose(&enum_choices)?;
-        return choice(ctx, u);
+        lazy_choose!(u, {
+            Fields::Named(c_arbitrary(ctx, u)?),
+            Fields::Unnamed(c_arbitrary(ctx, u)?),
+            Fields::Unit,
+        })
     }
 }
 
@@ -697,14 +703,12 @@ impl<'a> ContextArbitrary<'a, Context> for ItemTrait {
 
 impl<'a> ContextArbitrary<'a, Context> for TraitItem {
     fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
-        let enum_choices = [
-            |ctx, u| Ok(TraitItem::Const(c_arbitrary(ctx, u)?)),
-            |ctx, u| Ok(TraitItem::Method(c_arbitrary(ctx, u)?)),
-            |ctx, u| Ok(TraitItem::Type(c_arbitrary(ctx, u)?)),
+        lazy_choose!(u, {
+            TraitItem::Const(c_arbitrary(ctx, u)?),
+            TraitItem::Method(c_arbitrary(ctx, u)?),
+            TraitItem::Type(c_arbitrary(ctx, u)?),
             // intentionally ommited: Macro, Verbatim
-        ];
-        let choice = u.choose(&enum_choices)?;
-        return choice(ctx, u);
+        })
     }
 }
 
@@ -750,23 +754,21 @@ impl<'a> ContextArbitrary<'a, Context> for TraitItemConst {
 
 impl<'a> ContextArbitrary<'a, Context> for Visibility {
     fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
-        let enum_choices = [
-            |_, _| Ok(Visibility::Public(VisPublic{ pub_token: parse_quote!(pub), })),
+        guarded_lazy_choose!(u, {
+            true => Visibility::Public(VisPublic{ pub_token: parse_quote!(pub), }),
             // Still experimental
             // |_, _| Ok(Visibility::Crate(VisCrate { crate_token: parse_quote!(crate), })),
             // Relies on accessing crates
-            // |ctx, u| {
-            //     Ok(Visibility::Restricted(VisRestricted {
-            //         pub_token: parse_quote!(pub),
-            //         paren_token: Paren { span: dummy_span() },
-            //         in_token: parse_quote!(in),
-            //         path: c_arbitrary(ctx, u)?,
-            //     }))
-            // },
-            |_, _| Ok(Visibility::Inherited),
-        ];
-        let choice = u.choose(&enum_choices)?;
-        return choice(ctx, u);
+            !ctx.regard_semantics => {
+                Visibility::Restricted(VisRestricted {
+                    pub_token: parse_quote!(pub),
+                    paren_token: Paren { span: dummy_span() },
+                    in_token: parse_quote!(in),
+                    path: c_arbitrary(ctx, u)?,
+                })
+            },
+            true => Visibility::Inherited,
+        })
     }
 }
 
@@ -833,29 +835,22 @@ impl<'a> ContextArbitrary<'a, Context> for ItemType {
 
 impl<'a> ContextArbitrary<'a, Context> for Type {
     fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
-        let enum_choices = [
-            |ctx, u| Ok(Type::Slice(c_arbitrary(ctx, u)?)),
-            |ctx, u| Ok(Type::Array(c_arbitrary(ctx, u)?)),
-            |ctx, u| Ok(Type::Ptr(c_arbitrary(ctx, u)?)),
-            |ctx, u| Ok(Type::Reference(c_arbitrary(ctx, u)?)),
-            |ctx, u| Ok(Type::BareFn(c_arbitrary(ctx, u)?)),
-            // |_  , _| Ok(Type::Never(syn::TypeNever{bang_token: parse_quote!(!)})),
-            |ctx, u| Ok(Type::Tuple(c_arbitrary(ctx, u)?)),
-            |ctx, u| Ok(Type::Path(c_arbitrary(ctx, u)?)),
-            |ctx, u| Ok(Type::TraitObject(c_arbitrary(ctx, u)?)),
-            |ctx, u| Ok(Type::ImplTrait(c_arbitrary(ctx, u)?)),
-            |ctx, u| Ok(Type::Paren(c_arbitrary(ctx, u)?)),
-            |ctx, u| Ok(Type::Group(c_arbitrary(ctx, u)?)),
-            |_, _| {
-                Ok(Type::Infer(TypeInfer {
-                    underscore_token: parse_quote!(_),
-                }))
-            },
+        lazy_choose!(u, {
+            Type::Slice(c_arbitrary(ctx, u)?),
+            Type::Array(c_arbitrary(ctx, u)?),
+            Type::Ptr(c_arbitrary(ctx, u)?),
+            Type::Reference(c_arbitrary(ctx, u)?),
+            Type::BareFn(c_arbitrary(ctx, u)?),
+            // Type::Never(syn::TypeNever{bang_token: parse_quote!(!)}),
+            Type::Tuple(c_arbitrary(ctx, u)?),
+            Type::Path(c_arbitrary(ctx, u)?),
+            Type::TraitObject(c_arbitrary(ctx, u)?),
+            Type::ImplTrait(c_arbitrary(ctx, u)?),
+            Type::Paren(c_arbitrary(ctx, u)?),
+            Type::Group(c_arbitrary(ctx, u)?),
+            Type::Infer(TypeInfer { underscore_token: parse_quote!(_) }),
             // Intentionally omitted: Macro, Verbatim
-            // TODO:
-        ];
-        let choice = u.choose(&enum_choices)?;
-        return choice(ctx, u);
+        })
     }
 }
 
@@ -980,28 +975,22 @@ impl<'a> ContextArbitrary<'a, Context> for TypeGroup {
 
 impl<'a> ContextArbitrary<'a, Context> for TypeParamBound {
     fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
-        let enum_choices = [
-            |ctx, u| Ok(TypeParamBound::Trait(c_arbitrary(ctx, u)?)),
-            |ctx, u| Ok(TypeParamBound::Lifetime(c_arbitrary(ctx, u)?)),
-        ];
-        let choice = u.choose(&enum_choices)?;
-        return choice(ctx, u);
+        lazy_choose!(u, {
+            TypeParamBound::Trait(c_arbitrary(ctx, u)?),
+            TypeParamBound::Lifetime(c_arbitrary(ctx, u)?),
+        })
     }
 }
 
 impl<'a> ContextArbitrary<'a, Context> for ReturnType {
     fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
-        let enum_choices = [
-            |_, _| Ok(ReturnType::Default),
-            |ctx, u| {
-                Ok(ReturnType::Type(
-                    parse_quote!(->),
-                    parens_ty!(ctx, c_arbitrary(ctx, u)?),
-                ))
-            },
-        ];
-        let choice = u.choose(&enum_choices)?;
-        return choice(ctx, u);
+        lazy_choose!(u, {
+            ReturnType::Default,
+            ReturnType::Type(
+                parse_quote!(->),
+                parens_ty!(ctx, c_arbitrary(ctx, u)?),
+            )
+        })
     }
 }
 
@@ -1065,30 +1054,28 @@ impl<'a> ContextArbitrary<'a, Context> for Signature {
 }
 
 impl<'a> ContextArbitrary<'a, Context> for Abi {
-    fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
-        let possible_names = [
-            |_,_| ok(None),
-            |_,_| ok(Some(parse_quote!("Rust"))),
-            |_,_| ok(Some(parse_quote!("C"))),
-            |_,u| { let name: String = Arbitrary::arbitrary(u)?;
-                    ok(Some(parse_quote!(#name))) }
-        ];
+    fn c_arbitrary(_ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
+        let name = lazy_choose!(u, {
+            None,
+            Some(parse_quote!("Rust")),
+            Some(parse_quote!("C")),
+            { let name: String = Arbitrary::arbitrary(u)?;
+              Some(parse_quote!(#name)) }
+        })?;
         Ok(Abi {
             extern_token: parse_quote!(extern),
-            name: u.choose(&possible_names)?(ctx, u)?
+            name
         })
     }
 }
 
 impl<'a> ContextArbitrary<'a, Context> for FnArg {
     fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
-        let enum_choices = [
+        lazy_choose!(u, {
             // only the first token can be a reciever
-            // |ctx, u| Ok(FnArg::Receiver(c_arbitrary(ctx, u)?)) ,
-            |ctx: &mut Context, u| Ok(FnArg::Typed(irrefutable!(ctx, c_arbitrary(ctx, u)?))),
-        ];
-        let choice = u.choose(&enum_choices)?;
-        return choice(ctx, u);
+            // FnArg::Receiver(c_arbitrary(ctx, u)?) ,
+            FnArg::Typed(irrefutable!(ctx, c_arbitrary(ctx, u)?)),
+        })
     }
 }
 
@@ -1105,44 +1092,35 @@ impl<'a> ContextArbitrary<'a, Context> for PatType {
 
 impl<'a> ContextArbitrary<'a, Context> for Pat {
     fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
-        let enum_choices: Vec<FlaggedClosure<Pat>> = vec![
-            flagged!([], |ctx, u| Ok(Pat::Box(c_arbitrary(ctx, u)?))),
-            flagged!([], |ctx, u| Ok(Pat::Ident(c_arbitrary(ctx, u)?))),
-            flagged!([], |ctx, u| Ok(Pat::Path(c_arbitrary(ctx, u)?))),
-            flagged!([], |ctx, u| Ok(Pat::Reference(c_arbitrary(ctx, u)?))),
-            flagged!([], |_, _| {
-                Ok(Pat::Rest(PatRest {
-                    attrs: vec![],
-                    dot2_token: parse_quote!(..),
-                }))
+        let irrefut = !ctx.regard_semantics || !ctx.is_refutable;
+        let range = irrefut && (!ctx.regard_semantics || ctx.allow_range);
+        guarded_lazy_choose!(u, {
+            true => Pat::Box(c_arbitrary(ctx, u)?),
+            true => Pat::Ident(c_arbitrary(ctx, u)?),
+            true => Pat::Path(c_arbitrary(ctx, u)?),
+            true => Pat::Reference(c_arbitrary(ctx, u)?),
+            true => Pat::Rest(PatRest {
+                attrs: vec![],
+                dot2_token: parse_quote!(..),
             }),
-            flagged!([], |ctx, u| Ok(Pat::Slice(c_arbitrary(ctx, u)?))),
-            flagged!([], |ctx, u| Ok(Pat::Tuple(c_arbitrary(ctx, u)?))),
+            true => Pat::Slice(c_arbitrary(ctx, u)?),
+            true => Pat::Tuple(c_arbitrary(ctx, u)?),
             // TODO: figure out when type patterns make sense (they often don't)
             // Box::new(|ctx, u| Ok(Pat::Type(c_arbitrary(ctx, u)?)) ),
-            flagged!([], |_, _| {
-                Ok(Pat::Wild(PatWild {
-                    attrs: vec![],
-                    underscore_token: parse_quote!(_),
-                }))
+            true => Pat::Wild(PatWild {
+                attrs: vec![],
+                underscore_token: parse_quote!(_),
             }),
             // intentionally omitted: Macro, Verbatim
             // NOTE: Unit literal can be refutable, needs a special case
-            flagged!([Irrefutable], |ctx, u| Ok(Pat::Lit(c_arbitrary(ctx, u)?))),
+            irrefut => Pat::Lit(c_arbitrary(ctx, u)?),
             // NOTE: Perhaps or patterns can be irrefutable, but it doesn't make much sense
-            flagged!([Irrefutable], |ctx, u| Ok(Pat::Or(c_arbitrary(ctx, u)?))),
+            irrefut => Pat::Or(c_arbitrary(ctx, u)?),
             // NOTE: can be irrefutable, depending on if it's a struct or an enum
-            flagged!([Irrefutable], |ctx, u| Ok(Pat::Struct(c_arbitrary(ctx, u)?))),
-            flagged!([Irrefutable], |ctx, u| Ok(Pat::TupleStruct(c_arbitrary(ctx, u)?))),
-            flagged!([Irrefutable, Range], |ctx, u| Ok(Pat::Range(c_arbitrary(ctx, u)?)))
-        ];
-        let choices = filter_flags(enum_choices, |flags| {
-            !ctx.regard_semantics
-            || ((ctx.is_refutable || flags.contains(&Irrefutable))
-                && (ctx.allow_range || !flags.contains(&Range)))
-        });
-        let choice = u.choose(&choices)?;
-        return choice(ctx, u);
+            irrefut => Pat::Struct(c_arbitrary(ctx, u)?),
+            irrefut => Pat::TupleStruct(c_arbitrary(ctx, u)?),
+            range => Pat::Range(c_arbitrary(ctx, u)?)
+        })
     }
 }
 
@@ -1292,11 +1270,10 @@ impl<'a> ContextArbitrary<'a, Context> for Index {
 
 impl<'a> ContextArbitrary<'a, Context> for RangeLimits {
     fn c_arbitrary(_ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
-        let enum_choices = [
+        lazy_choose!(u, {
             RangeLimits::HalfOpen(parse_quote!(..)),
             RangeLimits::Closed(parse_quote!(..=)),
-        ];
-        return Ok(*u.choose(&enum_choices)?);
+        })
     }
 }
 
@@ -1316,13 +1293,12 @@ impl<'a> ContextArbitrary<'a, Context> for Block {
     fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
         let stmts: Vec<Stmt>;
         if ctx.regard_semantics {
-            let enum_choices = [
-                |ctx, u| Ok(Stmt::Expr(c_arbitrary(ctx, u)?)),
-                |ctx, u| Ok(Stmt::Semi(Expr::Return(c_arbitrary(ctx, u)?), parse_quote!(;)))
-            ];
-            let choice = u.choose(&enum_choices)?;
-            let final_stmt = choice(ctx, u);
-            let init_stmts: ContextArbitraryIter<Stmt, Context> = c_arbitrary_iter(ctx, u);
+            let final_stmt = lazy_choose!(u, {
+                Stmt::Expr(c_arbitrary(ctx, u)?),
+                Stmt::Semi(Expr::Return(c_arbitrary(ctx, u)?), parse_quote!(;))
+            });
+            let init_stmts: ContextArbitraryIter<Stmt, Context>
+                = c_arbitrary_iter(ctx, u);
             stmts = init_stmts
                 .chain(iter::once(final_stmt))
                 .collect::<Result<Vec<Stmt>>>()?;
@@ -1339,15 +1315,13 @@ impl<'a> ContextArbitrary<'a, Context> for Block {
 
 impl<'a> ContextArbitrary<'a, Context> for Stmt {
     fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
-        let enum_choices = [
-            |ctx, u| Ok(Stmt::Local(c_arbitrary(ctx, u)?)),
-            |ctx, u| Ok(Stmt::Item(c_arbitrary(ctx, u)?)),
+        lazy_choose!(u, {
+            Stmt::Local(c_arbitrary(ctx, u)?),
+            Stmt::Item(c_arbitrary(ctx, u)?),
             // TODO: expr should only be last in a block
             // |ctx, u| Ok(Stmt::Expr(c_arbitrary(ctx, u)?)) ,
-            |ctx, u| Ok(Stmt::Semi(c_arbitrary(ctx, u)?, parse_quote!(;))),
-        ];
-        let choice = u.choose(&enum_choices)?;
-        return choice(ctx, u);
+            Stmt::Semi(c_arbitrary(ctx, u)?, parse_quote!(;)),
+        })
     }
 }
 
@@ -1380,19 +1354,17 @@ fn pattern_of_type<'a, 'b>(
     u: &mut Unstructured<'a>,
     ty: &'b semantics::Type
 ) -> Result<(Pat, Vec<(String, &'b semantics::Type)>)> {
-    let mut enum_choices: Vec<Box<dyn Fn(_,_,&'b semantics::Type) -> _>> = vec![
-        Box::new(|ctx, u, ty| {
+    guarded_lazy_choose!(u, {
+        true => {
             let pat = c_arbitrary(ctx, u)?;
             let name = quote!(#pat).to_string();
-            Ok((Pat::Ident(pat), vec![(name, ty)]))
-        }),
-        Box::new(|_,_,_| Ok((Pat::Wild(PatWild{
+            (Pat::Ident(pat), vec![(name, ty)])
+        },
+        true => (Pat::Wild(PatWild{
             attrs:vec![],
             underscore_token:parse_quote!(_)
-        }), vec![]))),
-    ];
-    if ty.name.starts_with("Tuple") {
-        enum_choices.push(Box::new(|ctx, u, ty| {
+        }), vec![]),
+        ty.name.starts_with("Tuple") => {
             let mut fields = vec![];
             let mut sub_types = vec![];
             for type_arg in &ty.type_args {
@@ -1405,100 +1377,87 @@ fn pattern_of_type<'a, 'b>(
                 paren_token: Paren { span: dummy_span() },
                 elems: fields.into_iter().collect()
             });
-            Ok((tuple, sub_types))
-        }));
-    }
-    if ty.name == "Reference" {
-        enum_choices.push(Box::new(|ctx, u, ty| {
+            (tuple, sub_types)
+        },
+        ty.name == "Reference" => {
             let (inner, sub_types) = pattern_of_type(ctx, u, &ty.type_args[0])?;
-            Ok((Pat::Reference(PatReference{
+            (Pat::Reference(PatReference{
                 attrs: vec![],
                 and_token: parse_quote!(&),
                 // TODO: check if this can be mutable
                 mutability: None,
                 pat: Box::new(inner)
-            }), sub_types))
-        }));
-    }
+            }), sub_types)
+        }
+    })
     // TODO: add more patterns
-    let choice = u.choose(&enum_choices)?;
-    return choice(ctx, u, ty);
 }
 
 impl<'a> ContextArbitrary<'a, Context> for Expr {
     // #[add_depth(ctx)]
     fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
-        let flagged_enum_choices: Vec<FlaggedClosure<Expr>> = vec![
-            flagged!([], |ctx, u| Ok(Expr::Array(c_arbitrary(ctx, u)?))),
-            flagged!([], |ctx, u| Ok(Expr::Tuple(c_arbitrary(ctx, u)?))),
-            flagged!([], |ctx, u| Ok(Expr::Path(c_arbitrary(ctx, u)?))),
-            flagged!([], |ctx, u| Ok(Expr::Lit(c_arbitrary(ctx, u)?))),
-            flagged!([], |ctx, u| Ok(Expr::Binary(c_arbitrary(ctx, u)?))),
-            flagged!([], |ctx, u| Ok(Expr::Assign(c_arbitrary(ctx, u)?))),
-            flagged!([], |ctx, u| Ok(Expr::AssignOp(c_arbitrary(ctx, u)?))),
-            flagged!([], |ctx, u| Ok(Expr::Await(c_arbitrary(ctx, u)?))),
-            flagged!([], |ctx, u| Ok(Expr::Block(c_arbitrary(ctx, u)?))),
-            flagged!([], |ctx, u| Ok(Expr::Box(c_arbitrary(ctx, u)?))),
-            flagged!([], |ctx, u| Ok(Expr::Call(c_arbitrary(ctx, u)?))),
-            flagged!([], |ctx, u| Ok(Expr::Cast(c_arbitrary(ctx, u)?))),
-            flagged!([], |ctx, u| Ok(Expr::Closure(c_arbitrary(ctx, u)?))),
-            flagged!([], |ctx, u| Ok(Expr::Group(c_arbitrary(ctx, u)?))),
-            flagged!([], |ctx, u| Ok(Expr::If(c_arbitrary(ctx, u)?))),
-            flagged!([], |ctx, u| Ok(Expr::Loop(c_arbitrary(ctx, u)?))),
-            // Macro(ExprMacro),
-            flagged!([], |ctx, u| Ok(Expr::Match(c_arbitrary(ctx, u)?))),
-            flagged!([], |ctx, u| Ok(Expr::MethodCall(c_arbitrary(ctx, u)?))),
-            flagged!([], |ctx, u| Ok(Expr::Paren(c_arbitrary(ctx, u)?))),
-            flagged!([], |ctx, u| Ok(Expr::Range(c_arbitrary(ctx, u)?))),
-            flagged!([], |ctx, u| Ok(Expr::Reference(c_arbitrary(ctx, u)?))),
-            flagged!([], |ctx, u| Ok(Expr::Repeat(c_arbitrary(ctx, u)?))),
-            flagged!([], |ctx, u| Ok(Expr::Struct(c_arbitrary(ctx, u)?))),
-            flagged!([], |ctx, u| Ok(Expr::Try(c_arbitrary(ctx, u)?))),
-            flagged!([], |ctx, u| Ok(Expr::Unary(c_arbitrary(ctx, u)?))),
-            flagged!([], |ctx, u| Ok(Expr::Async(c_arbitrary(ctx, u)?))),
-            flagged!([], |ctx, u| Ok(Expr::Break(c_arbitrary(ctx, u)?))),
-            flagged!([], |ctx, u| Ok(Expr::Continue(c_arbitrary(ctx, u)?))),
-            flagged!([], |ctx, u| Ok(Expr::ForLoop(c_arbitrary(ctx, u)?))),
-            // flagged!([], |ctx, u| Ok(Expr::Let(c_arbitrary(ctx, u)?))),
-            flagged!([], |ctx, u| Ok(Expr::TryBlock(c_arbitrary(ctx, u)?))),
-            flagged!([], |ctx, u| Ok(Expr::While(c_arbitrary(ctx, u)?))),
+        let place_expr = !ctx.regard_semantics || ctx.is_place_expression;
+        let within_depth = ctx.depth < MAX_DEPTH;
+        ctx.depth += 1;
+        let expr = guarded_lazy_choose!(u, {
+            within_depth => Expr::Array(c_arbitrary(ctx, u)?),
+            within_depth => Expr::Tuple(c_arbitrary(ctx, u)?),
+            within_depth => Expr::Path(c_arbitrary(ctx, u)?),
+            within_depth => Expr::Lit(c_arbitrary(ctx, u)?),
+            within_depth => Expr::Binary(c_arbitrary(ctx, u)?),
+            within_depth => Expr::Assign(c_arbitrary(ctx, u)?),
+            within_depth => Expr::AssignOp(c_arbitrary(ctx, u)?),
+            within_depth => Expr::Await(c_arbitrary(ctx, u)?),
+            within_depth => Expr::Block(c_arbitrary(ctx, u)?),
+            within_depth => Expr::Box(c_arbitrary(ctx, u)?),
+            within_depth => Expr::Call(c_arbitrary(ctx, u)?),
+            within_depth => Expr::Cast(c_arbitrary(ctx, u)?),
+            within_depth => Expr::Closure(c_arbitrary(ctx, u)?),
+            within_depth => Expr::Group(c_arbitrary(ctx, u)?),
+            within_depth => Expr::If(c_arbitrary(ctx, u)?),
+            within_depth => Expr::Loop(c_arbitrary(ctx, u)?),
+            within_depth => Expr::Match(c_arbitrary(ctx, u)?),
+            within_depth => Expr::MethodCall(c_arbitrary(ctx, u)?),
+            within_depth => Expr::Paren(c_arbitrary(ctx, u)?),
+            within_depth => Expr::Range(c_arbitrary(ctx, u)?),
+            within_depth => Expr::Reference(c_arbitrary(ctx, u)?),
+            within_depth => Expr::Repeat(c_arbitrary(ctx, u)?),
+            within_depth => Expr::Struct(c_arbitrary(ctx, u)?),
+            within_depth => Expr::Try(c_arbitrary(ctx, u)?),
+            within_depth => Expr::Unary(c_arbitrary(ctx, u)?),
+            within_depth => Expr::Async(c_arbitrary(ctx, u)?),
+            within_depth => Expr::Break(c_arbitrary(ctx, u)?),
+            within_depth => Expr::Continue(c_arbitrary(ctx, u)?),
+            within_depth => Expr::ForLoop(c_arbitrary(ctx, u)?),
+            // true => Expr::Let(c_arbitrary(ctx, u)?),
+            within_depth => Expr::TryBlock(c_arbitrary(ctx, u)?),
+            within_depth => Expr::While(c_arbitrary(ctx, u)?),
             // Generators are still an unstable feature
-            // flagged!([], |ctx, u| Ok(Expr::Yield(c_arbitrary(ctx, u)?))),
-            flagged!([], |ctx, u| Ok(Expr::Return(c_arbitrary(ctx, u)?))),
+            // true => Expr::Yield(c_arbitrary(ctx, u)?),
+            within_depth => Expr::Return(c_arbitrary(ctx, u)?),
 
             // Unsafe(ExprUnsafe),
-            flagged!([PlaceExpression], |ctx, u| Ok(Expr::Index(c_arbitrary(ctx, u)?))),
-            flagged!([PlaceExpression], |ctx, u| Ok(Expr::Field(c_arbitrary(ctx, u)?))),
+            within_depth && place_expr => Expr::Index(c_arbitrary(ctx, u)?),
+            within_depth && place_expr => Expr::Field(c_arbitrary(ctx, u)?),
             // deref
-            flagged!([PlaceExpression], |ctx, u| Ok(Expr::Unary(ExprUnary {
+            within_depth && place_expr => Expr::Unary(ExprUnary {
                attrs: vec!(),
                op: parse_quote!(*),
                // In case this is selected when regard semantics is false
                expr: place_expression!(ctx, c_arbitrary(ctx, u)?)
-            }))),
-            flagged!([NonRecursive], |ctx, u| Ok(Expr::Lit(c_arbitrary(ctx, u)?))),
-            flagged!([NonRecursive, PlaceExpression], local_var_expr),
-        ];
-        let choices = filter_flags(flagged_enum_choices, |flags| {
-            if ctx.depth > MAX_DEPTH {
-               flags.contains(&NonRecursive)
-            } else {
-               !ctx.regard_semantics
-               || (!ctx.is_place_expression || flags.contains(&PlaceExpression))
-            }
-        });
-        let choice: &ChoiceClosure<Expr> = u.choose(&choices)?;
+            }),
+            true => Expr::Lit(c_arbitrary(ctx, u)?),
+            place_expr => local_var_expr(ctx, u)?,
+        })?;
+        ctx.depth -= 1;
         // Place expressions do not need to be paranthesized ordinarily,
         // but since we can generate arbitrary expressions when we disregard 
         // semantics we need to parenthesize them in that case
-        ctx.depth += 1;
-        let result = if !ctx.regard_semantics && ctx.is_place_expression {
-            Ok(parenthesize_expr(12, choice(ctx, u)?))
+        if !ctx.regard_semantics && ctx.is_place_expression {
+            return Ok(parenthesize_expr(12, expr));
         } else {
-            choice(ctx, u)
-        };
-        ctx.depth -= 1;
-        return result;
+            return Ok(expr);
+        }
     }
 }
 
@@ -1873,12 +1832,10 @@ impl<'a> ContextArbitrary<'a, Context> for ExprField {
 
 impl<'a> ContextArbitrary<'a, Context> for Member {
     fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
-        let enum_choices = [
-            |ctx, u| Ok(Member::Named(c_arbitrary(ctx, u)?)),
-            |ctx, u| Ok(Member::Unnamed(c_arbitrary(ctx, u)?)),
-        ];
-        let choice = u.choose(&enum_choices)?;
-        return choice(ctx, u);
+        lazy_choose!(u,  {
+            Member::Named(c_arbitrary(ctx, u)?),
+            Member::Unnamed(c_arbitrary(ctx, u)?),
+        })
     }
 }
 
@@ -2017,14 +1974,12 @@ impl<'a> ContextArbitrary<'a, Context> for ExprAssign {
 
 impl<'a> ContextArbitrary<'a, Context> for ExprAssignOp {
     fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
-        let enum_choices = [
+        let op = lazy_choose!(u,  {
             BinOp::AddEq(parse_quote!(+=)),
             BinOp::SubEq(parse_quote!(-=)),
             BinOp::MulEq(parse_quote!(*=)),
             BinOp::DivEq(parse_quote!(/=)),
-        ];
-        let choice = u.choose(&enum_choices)?;
-        let op = *choice;
+        })?;
         Ok(ExprAssignOp {
             attrs: vec![],
             left: place_expression!(ctx, c_arbitrary(ctx, u)?),
@@ -2048,15 +2003,13 @@ impl<'a> ContextArbitrary<'a, Context> for ExprBinary {
 
 impl<'a> ContextArbitrary<'a, Context> for BinOp {
     fn c_arbitrary(_ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
-        let ops = [
+        lazy_choose!(u,  {
             parse_quote!(+),
             parse_quote!(*),
             parse_quote!(/),
             parse_quote!(%),
             parse_quote!(-),
-        ];
-        let op = u.choose(&ops)?;
-        return Ok(*op);
+        })
     }
 }
 
@@ -2121,27 +2074,17 @@ impl<'a> ContextArbitrary<'a, Context> for ExprPath {
 
 impl<'a> ContextArbitrary<'a, Context> for Lit {
     fn c_arbitrary(_ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
-        let data_choices = [
-            |u| {
-                let data: u32 = Arbitrary::arbitrary(u)?;
-                Ok(parse_quote!(#data))
-            },
-            |u| {
-                let data: String = Arbitrary::arbitrary(u)?;
-                Ok(parse_quote!(#data))
-            },
-            |u| {
-                let data: f64 = unwrap_finite_f64(Arbitrary::arbitrary(u)?);
-                // parse_quote! requires that the float is finite
-                Ok(parse_quote!(#data))
-            },
-            |u| {
-                let data: bool = Arbitrary::arbitrary(u)?;
-                Ok(parse_quote!(#data))
-            },
-        ];
-        let choice = u.choose(&data_choices)?;
-        return choice(u);
+        lazy_choose!(u,  {
+            { let data: u32 = Arbitrary::arbitrary(u)?;
+              parse_quote!(#data) },
+            { let data: String = Arbitrary::arbitrary(u)?;
+              parse_quote!(#data) },
+            { let data: f64 = unwrap_finite_f64(Arbitrary::arbitrary(u)?);
+              // parse_quote! requires that the float is finite
+              parse_quote!(#data) },
+            { let data: bool = Arbitrary::arbitrary(u)?;
+              parse_quote!(#data) },
+        })
     }
 }
 
@@ -2161,7 +2104,7 @@ impl<'a> ContextArbitrary<'a, Context> for Lifetime {
     fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
         Ok(Lifetime {
             apostrophe: dummy_span(),
-            ident: c_arbitrary(ctx, u)?,
+            ident: lifetime!(ctx, c_arbitrary(ctx, u)?),
         })
     }
 }
@@ -2186,11 +2129,57 @@ impl<'a> ContextArbitrary<'a, Context> for PathSegment {
     }
 }
 
+lazy_static! {
+
+    static ref KWDS_STRICT: HashSet<&'static str> = ["as", "break", "const", "continue", "crate", "else", "enum", "extern", "crate", "else", "enum", "extern", "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref", "return", "self", "Self", "static", "struct", "trait", "true", "type", "unsafe", "use", "where", "while", "await", "dyn", "abstract", "become", "box", "do", "final", "macro", "override", "priv", "typeof", "unsized", "virtual", "yield"].iter().cloned().collect();
+
+    static ref U_XID_START: Vec<char> =
+        String::from_utf8(std::fs::read("./unicode/xid_start.txt").expect("Error reading file of unicode characters"))
+            .expect("Error parsing file of unicode characters")
+            .chars()
+            .filter(|c| c != &'\n')
+            .collect();
+    static ref U_XID_CONTINUE: Vec<char> =
+        String::from_utf8(std::fs::read("./unicode/xid_continue.txt").expect("Error reading file of unicode characters"))
+            .expect("Error parsing file of unicode characters")
+            .chars()
+            .filter(|c| c != &'\n')
+            .collect();
+    static ref ALPHA_: Vec<char>  = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_".chars().collect();
+    static ref ALPHA_NUM: Vec<char> = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_0123456789".chars().collect();
+
+}
+
+// TODO: handle the "union" soft keyword
 impl<'a> ContextArbitrary<'a, Context> for Ident {
-    fn c_arbitrary(_ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
-        let names = ["foo", "bar", "baz", "quux", "lorem", "ipsum", "dolor"];
-        let name = *u.choose(&names)?;
-        let name_token: Ident = parse_str(name).expect("Invalid identifier");
+    fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
+        let mut name: String = String::new();
+        let fst_chars: &Vec<char>;
+        let rest_chars: &Vec<char>;
+        if ctx.regard_semantics && !ctx.non_ascii {
+            fst_chars = &*ALPHA_;
+            rest_chars = &*ALPHA_NUM;
+        } else {
+            fst_chars = &*U_XID_START;
+            rest_chars = &*U_XID_CONTINUE;
+        }
+        let fst_char: char = *u.choose(fst_chars)?;
+        name.push(fst_char);
+        let min_l = if fst_char == '_' { 1 } else { 0 };
+        for _ in min_l..(u.int_in_range(0..=10)?) {
+           let char = *u.choose(rest_chars)?;
+           name.push(char);
+        }
+        // Lifetimes can't have raw variables, so we can't just make it a raw variable if it is a keyword
+        while ctx.is_lifetime && (KWDS_STRICT.contains(&&name[..]) || name == "static") {
+            let char = *u.choose(rest_chars)?;
+            name.push(char);
+        }
+        let name_token: Ident = if !ctx.is_lifetime && (KWDS_STRICT.contains(&&name[..]) || Arbitrary::arbitrary(u)?) {
+            parse_str(&format!("r#{}", name)).unwrap()
+        } else {
+            Ident::new(&name, dummy_span())
+        };
         return Ok(name_token);
     }
 }

@@ -25,7 +25,7 @@ use crate::syn_arbitrary::WrappedFile;
 fn main() -> Result<(), MainError> {
     let semantically_correct: bool = Some(String::from("syntax")) != env::args().nth(1);
     let code_str: String;
-    
+
     let wrapped_ast: syn_arbitrary::WrappedFile =
         with_stack_space_of(64 * 1024 * 1024, move || {
             let mut rng = thread_rng();
