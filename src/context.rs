@@ -10,7 +10,6 @@ pub struct Context {
     pub scopes: Stack<Scope>,
     /// if false, generate syntactically valid code that may be semantically incorrect
     pub regard_semantics: bool,
-    // pub ty: Type,
     /// To prevent airbitrarly nested expressions
     pub depth: usize,
     /// for loops (and possibly other things) don't allow annotating the type of the expression
@@ -18,15 +17,19 @@ pub struct Context {
     pub allow_type_annotations: bool,
     // to avoid nonsensical code of the type let foo = return bar;
     pub has_value: bool,
-    /// E.g. valid targets forvariable assignments like foo, bar[2], baz.quux
+    /// (Semantics only) E.g. valid targets forvariable assignments like 
+    /// foo, bar[2], baz.quux
     // https://doc.rust-lang.org/stable/reference/expressions.html#place-expressions-and-value-expressions
     pub is_place_expression: bool,
     /// All fields in a struct should either be named or not named
     pub named_fields: bool,
     /// Only some things are allowed on a top level, e.g. static
     pub is_top_level: bool,
-    /// Let bindings and function arguments can't have patterns that can fail
+    /// (Semantics only) Let bindings and function arguments can't have
+    /// patterns that can fail
     pub is_refutable: bool,
+    /// Lifetimes can't contain raw identifiers
+    pub is_lifetime: bool,
     /// Ranges are not allowed in reference patterns
     pub allow_range: bool,
     /// Blocks with labels don't make sense e.g. as closure bodies. 
@@ -35,10 +38,12 @@ pub struct Context {
     /// If for example the cond of an if contains a block,
     /// the block needs to be parenthesized
     pub parenthesize_block: bool,
-    /// The expected type of the current expression
+    /// (Semantics only) The expected type of the current expression
     pub expected_type: semantics::Type,
-    /// A place where strings can be stored for use in e.g. variable names
-    pub owned_strings: Vec<String>
+    /// (Semantics only) does the file have a main function?
+    pub has_main: bool,
+    /// (Semantics only) are non ascii identifiers allowed?
+    pub non_ascii: bool
 }
 impl Context {
     pub fn make_context(regard_semantics: bool) -> Context {
@@ -56,27 +61,15 @@ impl Context {
             named_fields: true,
             is_top_level: false,
             is_refutable: true,
+            is_lifetime: false,
             allow_range: true,
             allow_block_labels: true,
             parenthesize_block: false,
             expected_type: crate::make_type!(Unit),
-            owned_strings: vec![],
+            has_main: false,
+            non_ascii: false,
         }
     }
-}
-
-
-/// Used to declare certain enum options as only available if certain context flags are set
-#[derive(PartialEq, Debug)]
-pub enum Flag {
-    // ContainsAnnotations,
-    PlaceExpression,
-    // ValueExpression,
-    TopLevel,
-    // IsRange,
-    NonRecursive,
-    Irrefutable,
-    Range
 }
 
 #[macro_export]
@@ -120,6 +113,11 @@ macro_rules! not_top_level {
 #[macro_export]
 macro_rules! irrefutable {
 ($ctx: ident, $e: expr) => (with_attrs!($ctx { is_refutable = false }, $e))
+}
+
+#[macro_export]
+macro_rules! lifetime {
+($ctx: ident, $e: expr) => (with_attrs!($ctx { is_lifetime = true }, $e))
 }
 
 #[macro_export]

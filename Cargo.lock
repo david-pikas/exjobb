@@ -751,6 +751,7 @@ version = "0.1.0"
 dependencies = [
  "add_depth",
  "arbitrary",
+ "lazy_static",
  "proc-macro2",
  "quote",
  "rand",
