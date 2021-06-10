@@ -46,7 +46,7 @@ macro_rules! guarded_lazy_choose {
          let choice = $u.int_in_range(0..=(len-1))?;
          let mut clause = 0;
          let mut i = 0;
-         $(if choice == clause {
+         $(if conds[i] && choice == clause {
                return Ok($choice); 
            }
            if conds[i] {
@@ -1422,7 +1422,7 @@ impl<'a> ContextArbitrary<'a, Context> for Expr {
             within_depth => Expr::Range(c_arbitrary(ctx, u)?),
             within_depth => Expr::Reference(c_arbitrary(ctx, u)?),
             within_depth => Expr::Repeat(c_arbitrary(ctx, u)?),
-            within_depth => Expr::Struct(c_arbitrary(ctx, u)?),
+            within_depth && !ctx.regard_semantics => Expr::Struct(c_arbitrary(ctx, u)?),
             within_depth => Expr::Try(c_arbitrary(ctx, u)?),
             within_depth => Expr::Unary(c_arbitrary(ctx, u)?),
             within_depth => Expr::Async(c_arbitrary(ctx, u)?),
