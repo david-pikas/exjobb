@@ -1,6 +1,6 @@
 use arbitrary::Arbitrary;
 use std::{collections::HashSet, iter::{self, empty}};
-use syn::{Abi, AngleBracketedGenericArguments, Arm, AttrStyle, Attribute, BareFnArg, BinOp, Block, Expr, ExprArray, ExprAssign, ExprAssignOp, ExprAsync, ExprAwait, ExprBinary, ExprBlock, ExprBox, ExprBreak, ExprCall, ExprCast, ExprClosure, ExprContinue, ExprField, ExprForLoop, ExprGroup, ExprIf, ExprIndex, ExprLet, ExprLit, ExprLoop, ExprMatch, ExprMethodCall, ExprParen, ExprPath, ExprRange, ExprReference, ExprRepeat, ExprReturn, ExprStruct, ExprTry, ExprTryBlock, ExprTuple, ExprType, ExprUnary, ExprWhile, ExprYield, Field, FieldPat, FieldValue, Fields, FieldsNamed, FieldsUnnamed, File, FnArg, GenericArgument, GenericMethodArgument, GenericParam, Generics, Ident, Index, Item, ItemConst, ItemEnum, ItemFn, ItemStatic, ItemTrait, ItemType, Label, Lifetime, Lit, Local, Member, MethodTurbofish, Pat, PatBox, PatIdent, PatLit, PatOr, PatPath, PatRange, PatReference, PatRest, PatSlice, PatStruct, PatTuple, PatTupleStruct, PatType, PatWild, PathArguments, PathSegment, RangeLimits, Receiver, ReturnType, Signature, Stmt, Token, TraitBound, TraitBoundModifier, TraitItem, TraitItemConst, TraitItemMethod, TraitItemType, Type, TypeArray, TypeBareFn, TypeGroup, TypeImplTrait, TypeInfer, TypeParamBound, TypeParen, TypePath, TypePtr, TypeReference, TypeSlice, TypeTraitObject, TypeTuple, UnOp, Variadic, Variant, VisPublic, VisRestricted, Visibility, parse_quote, parse_str, punctuated::Punctuated, token::{Brace, Bracket, Group, Paren}};
+use syn::{Abi, AngleBracketedGenericArguments, Arm, AttrStyle, Attribute, BareFnArg, BinOp, Binding, Block, Constraint, Expr, ExprArray, ExprAssign, ExprAssignOp, ExprAsync, ExprAwait, ExprBinary, ExprBlock, ExprBox, ExprBreak, ExprCall, ExprCast, ExprClosure, ExprContinue, ExprField, ExprForLoop, ExprGroup, ExprIf, ExprIndex, ExprLet, ExprLit, ExprLoop, ExprMatch, ExprMethodCall, ExprParen, ExprPath, ExprRange, ExprReference, ExprRepeat, ExprReturn, ExprStruct, ExprTry, ExprTryBlock, ExprTuple, ExprType, ExprUnary, ExprWhile, ExprYield, Field, FieldPat, FieldValue, Fields, FieldsNamed, FieldsUnnamed, File, FnArg, GenericArgument, GenericMethodArgument, GenericParam, Generics, Ident, Index, Item, ItemConst, ItemEnum, ItemFn, ItemStatic, ItemTrait, ItemType, Label, Lifetime, Lit, Local, Member, MethodTurbofish, Pat, PatBox, PatIdent, PatLit, PatOr, PatPath, PatRange, PatReference, PatRest, PatSlice, PatStruct, PatTuple, PatTupleStruct, PatType, PatWild, PathArguments, PathSegment, RangeLimits, Receiver, ReturnType, Signature, Stmt, Token, TraitBound, TraitBoundModifier, TraitItem, TraitItemConst, TraitItemMethod, TraitItemType, Type, TypeArray, TypeBareFn, TypeGroup, TypeImplTrait, TypeInfer, TypeParamBound, TypeParen, TypePath, TypePtr, TypeReference, TypeSlice, TypeTraitObject, TypeTuple, UnOp, Variadic, Variant, VisPublic, VisRestricted, Visibility, parse_quote, parse_str, punctuated::Punctuated, token::{Brace, Bracket, Group, Paren}};
 use quote::quote;
 use lazy_static::lazy_static;
 
@@ -14,7 +14,6 @@ use super::semantics as semantics;
 use super::semantics::*;
 
 
-// use add_depth::*;
 
 const MAX_DEPTH: usize = 20;
 
@@ -24,6 +23,7 @@ pub fn make_wrapped_file<'a>(ctx: &mut Context, u: &mut Unstructured<'a>) -> Res
    Ok(WrappedFile(c_arbitrary(ctx, u)?))
 }
 
+// to help with type inference
 fn ok<T>(a: T) -> context_arbitrary::Result<T> {
    Ok(a)
 }
@@ -31,6 +31,13 @@ fn ok<T>(a: T) -> context_arbitrary::Result<T> {
 fn dummy_span() -> proc_macro2::Span {
     let dummy_token: Token![=] = parse_quote!(=);
     return dummy_token.span;
+}
+
+macro_rules! lit_of_type {
+   ($u:expr, $ty:ty) => ({
+      let l: $ty = Arbitrary::arbitrary($u)?;
+      parse_quote!(#l)
+   })
 }
 
 macro_rules! guarded_lazy_choose {
@@ -123,9 +130,10 @@ fn prescedence(e: &Expr) -> u8 {
     match e {
         Expr::Path(_) => 18,
         Expr::MethodCall(_) => 17,
-        Expr::Field(_) | Expr::Await(_) => 16,
+        Expr::Field(_) => 16,
         Expr::Call(_) | Expr::Index(_) => 15,
-        Expr::Try(_) => 14,
+        // await needs to be lower than call to not be parsed as a method
+        Expr::Try(_) | Expr::Await(_) => 14,
         Expr::Unary(_) => 13,
         Expr::Cast(_) => 12,
         Expr::Binary(op) => binary_prescedence(op.op),
@@ -136,8 +144,10 @@ fn prescedence(e: &Expr) -> u8 {
         Expr::Box(_) => 0,
         // Expr::Loop(l) if l.label.is_some() => 0,
         Expr::Group(g) => prescedence(&g.expr),
-        // TODO: loops might only need to be parenthesized if they're the lhs 
-        Expr::While(_) | Expr::ForLoop(_) | Expr::Loop(_) => 0,
+        // TODO: things with blocks might only need to be parenthesized if they're the lhs 
+        Expr::Block(_) | Expr::While(_) | Expr::ForLoop(_) | Expr::Closure(_) | 
+        Expr::Match(_) | Expr::Loop(_) | Expr::If(_) | Expr::TryBlock(_) => 0,
+        
         _ => u8::MAX
     }
 }
@@ -396,6 +406,25 @@ fn parenthesize_block(e: Expr) -> Expr {
     }
 }
 
+fn in_parens(e: Expr) -> Expr {
+    Expr::Paren(ExprParen {
+        attrs: vec![],
+        paren_token: Paren { span: dummy_span() },
+        expr: Box::new(e)
+    })
+}
+
+// TODO: is this actually a bug?
+fn parenthesize_label(e: Expr) -> Expr {
+    match e {
+        Expr::Block(b) if b.label.is_some() => in_parens(Expr::Block(b)),
+        Expr::ForLoop(b) if b.label.is_some() => in_parens(Expr::ForLoop(b)),
+        Expr::Loop(b) if b.label.is_some() => in_parens(Expr::Loop(b)),
+        Expr::While(b) if b.label.is_some() => in_parens(Expr::While(b)),
+        _ => e
+    }
+}
+
 fn parenthesize_type(ty: Type) -> Type {
     match ty {
         Type::Array(_) => ty,
@@ -432,12 +461,46 @@ fn parenthesize_pat(pat: Pat) -> Pat {
 
 impl From<semantics::Type> for syn::Type {
     fn from(ty: semantics::Type) -> Self {
-        if ty.name.starts_with("Tuple") {
+        if ty.name.starts_with("#Tuple") {
             syn::Type::Tuple(TypeTuple {
                 paren_token: Paren { span: dummy_span() },
                 elems: ty.type_args.into_iter().map::<syn::Type,_>(From::from).collect()
             })
+        } else if ty.name.starts_with("#Fn") {
+            syn::Type::BareFn(TypeBareFn {
+                // TODO: add more fields
+                lifetimes: None,
+                unsafety: None,
+                abi: None,
+                fn_token: parse_quote!(fn),
+                paren_token: Paren { span: dummy_span() },
+                inputs: ty.type_args[0].type_args.iter().map(|arg| {
+                    BareFnArg {
+                        attrs: vec![],
+                        name: None,
+                        // name: Some((parse_str(arg.name.to_str()), parse_quote!(:))),
+                        ty: arg.clone().into()
+                    }
+                }).collect(),
+                variadic: None,
+                output: ReturnType::Type(parse_quote!(->), Box::new(ty.type_args[1].clone().into()))
+            })
+        } else if ty.name == "#Unit" {
+            syn::Type::Tuple(TypeTuple {
+                paren_token: Paren { span: dummy_span() },
+                elems: iter::empty::<syn::Type>().collect()
+            })
+        } else if let Some(lit) = match ty.name.as_str() {
+          "u8" | "u16" | "u32" | "u64" | "u128" |
+          "i8" | "i16" | "i32" | "i64" | "i128" |
+          "char" | "str" => Some(parse_str(ty.name.as_str()).unwrap()),
+          _ => None
+        } {
+          lit
+        } else if ty.name.starts_with("#") {
+            panic!("Unhandled special type: {:?}", ty);
         } else {
+            println!("Type path: {:?}", ty);
             let ty_path = make_type_path(ty);
             syn::Type::Path(TypePath {
                 qself: None,
@@ -446,6 +509,54 @@ impl From<semantics::Type> for syn::Type {
         }
     }
 }
+
+fn from_sem_expr(u: &mut Unstructured, ex: semantics::Expr) -> Result<Expr> {
+     Ok(match ex {
+         semantics::Expr::Lit(name) => match name.as_str() {
+            "u8" => lit_of_type!(u, u8),
+            "u16" => lit_of_type!(u, u16),
+            "u32" => lit_of_type!(u, u32),
+            "u64" => lit_of_type!(u, u64),
+            "u128" => lit_of_type!(u, u128),
+            "i8" => lit_of_type!(u, i8),
+            "i16" => lit_of_type!(u, i16),
+            "i32" => lit_of_type!(u, i32),
+            "i64" => lit_of_type!(u, i64),
+            "i128" => lit_of_type!(u, i128),
+            "char" => lit_of_type!(u, i128),
+            "str" => lit_of_type!(u, i128),
+            "#Unit" => Expr::Tuple(ExprTuple {
+                attrs: vec![],
+                paren_token: Paren { span: dummy_span() },
+                elems: iter::empty::<Expr>().collect()
+            }),
+            s if s.starts_with("#") => panic!("Unhandled special type {}", s),
+            _ => Expr::Path(parse_str(name.as_str()).unwrap())
+         }
+         semantics::Expr::StructUnnamed(name, args) => {
+            if name.starts_with("#Tuple") {
+                Expr::Tuple(ExprTuple {
+                    attrs: vec![],
+                    paren_token: Paren { span: dummy_span() },
+                    elems: args.into_iter().map(|arg| from_sem_expr(u, arg))
+                               .collect::<Result<Punctuated<Expr, Token![,]>>>()?
+                })
+            } else {
+                Expr::Call(ExprCall {
+                    func: Box::new(Expr::Path(parse_str(name.as_str()).unwrap())),
+                    paren_token: Paren { span: dummy_span() },
+                    args: args.into_iter().map(|arg| from_sem_expr(u, arg))
+                              .collect::<Result<Punctuated<Expr, Token![,]>>>()?,
+                    attrs: vec![]
+                })
+            }
+         }
+         semantics::Expr::StructNamed(_, _) => todo!(),
+         semantics::Expr::Fn(_, _) => todo!(),
+         semantics::Expr::Var(_) => todo!(),
+     })
+}
+    // TODO: add the possibility for things like assignments in the middle of expressions
 
 fn make_type_path(ty: semantics::Type) -> syn::Path {
     let name = ty.name;
@@ -459,7 +570,13 @@ fn make_type_path(ty: semantics::Type) -> syn::Path {
                 args: ty.lt_args.into_iter().map(|semantics::Lifetime(lt)| GenericArgument::Lifetime(syn::Lifetime {
                     apostrophe: dummy_span(),
                     ident: parse_quote!(#lt),
-                })).chain(ty.type_args.into_iter().map(|ty| GenericArgument::Type(ty.into())))
+                })).chain(ty.type_args.into_iter().map(|ty_arg| {
+                    // if let param = ty.type_generics.iter().skip_while(|p| !p.matches(ty_arg)).next() {
+                    //     GenericArgument::Type(param.into())
+                    // } else {
+                        GenericArgument::Type(ty_arg.into())
+                    // }
+                }))
                    .collect(),
                 gt_token: parse_quote!(>),
             })
@@ -764,7 +881,7 @@ impl<'a> ContextArbitrary<'a, Context> for Visibility {
                     pub_token: parse_quote!(pub),
                     paren_token: Paren { span: dummy_span() },
                     in_token: parse_quote!(in),
-                    path: c_arbitrary(ctx, u)?,
+                    path: crate_path!(ctx, c_arbitrary(ctx, u)?),
                 })
             },
             true => Visibility::Inherited,
@@ -827,7 +944,11 @@ impl<'a> ContextArbitrary<'a, Context> for ItemType {
             ident: c_arbitrary(ctx, u)?,
             generics: c_arbitrary(ctx, u)?,
             eq_token: parse_quote!(=),
-            ty: c_arbitrary(ctx, u)?,
+            ty: if ctx.regard_semantics {
+                Box::new(pick_type(ctx, u)?.into())
+            } else {
+                c_arbitrary(ctx, u)?
+            },
             semi_token: parse_quote!(;),
         })
     }
@@ -1030,13 +1151,16 @@ impl<'a> ContextArbitrary<'a, Context> for Signature {
     fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
         // Only first arg can be a reciever
         let first_arg: Option<Receiver> = c_arbitrary(ctx, u)?;
-        let other_args = c_arbitrary_iter::<FnArg, Context>(ctx, u);
-        let inputs = match first_arg {
-            Some(r) => iter::once(Ok(FnArg::Receiver(r)))
-                .chain(other_args)
-                .collect::<Result<Punctuated<FnArg, Token![,]>>>()?,
-            None => other_args.collect::<Result<Punctuated<FnArg, Token![,]>>>()?,
-        };
+        let inputs: Punctuated<FnArg, Token![,]>;
+        irrefutable!(ctx, {
+            let other_args = c_arbitrary_iter::<FnArg, Context>(ctx, u);
+            inputs = match first_arg {
+                Some(r) => iter::once(Ok(FnArg::Receiver(r)))
+                    .chain(other_args)
+                    .collect::<Result<Punctuated<FnArg, Token![,]>>>()?,
+                None => other_args.collect::<Result<Punctuated<FnArg, Token![,]>>>()?,
+            };
+        });
         Ok(Signature {
             constness: None,
             asyncness: None,
@@ -1047,7 +1171,12 @@ impl<'a> ContextArbitrary<'a, Context> for Signature {
             generics: c_arbitrary(ctx, u)?,
             paren_token: Paren { span: dummy_span() },
             inputs,
-            variadic: c_arbitrary(ctx, u)?,
+            variadic: if ctx.regard_semantics {
+                // Can only be variadic if the function is unsafe extern "C"
+                None
+            } else {
+                c_arbitrary(ctx, u)?
+            },
             output: c_arbitrary(ctx, u)?,
         })
     }
@@ -1114,8 +1243,8 @@ impl<'a> ContextArbitrary<'a, Context> for Pat {
             // intentionally omitted: Macro, Verbatim
             // NOTE: Unit literal can be refutable, needs a special case
             irrefut => Pat::Lit(c_arbitrary(ctx, u)?),
-            // NOTE: Perhaps or patterns can be irrefutable, but it doesn't make much sense
-            irrefut => Pat::Or(c_arbitrary(ctx, u)?),
+            // Not even syntactically allowed
+            ctx.is_refutable => Pat::Or(c_arbitrary(ctx, u)?),
             // NOTE: can be irrefutable, depending on if it's a struct or an enum
             irrefut => Pat::Struct(c_arbitrary(ctx, u)?),
             irrefut => Pat::TupleStruct(c_arbitrary(ctx, u)?),
@@ -1139,7 +1268,6 @@ impl<'a> ContextArbitrary<'a, Context> for PatIdent {
         let opt_pat: Option<Box<Pat>> = c_arbitrary(ctx, u)?;
         Ok(PatIdent {
             attrs: vec![],
-            // TODO: ref
             by_ref: maybe(u, parse_quote!(ref)),
             mutability: maybe(u, parse_quote!(mut)),
             ident: c_arbitrary(ctx, u)?,
@@ -1152,7 +1280,10 @@ impl<'a> ContextArbitrary<'a, Context> for PatLit {
     fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
         Ok(PatLit {
             attrs: vec![],
-            // TODO: Pattern can either be a Lit or a Unary(-, Lit)
+            // NOTE: the documentation says that negative numbers are represented
+            //       as Unary(-, Lit(num)) but it seems like Lit can contain negative
+            //       numbers, meaning that constructing negative numbers in that way
+            //       is unneccesary.
             expr: Box::new(Expr::Lit(c_arbitrary(ctx, u)?)),
         })
     }
@@ -1279,10 +1410,9 @@ impl<'a> ContextArbitrary<'a, Context> for RangeLimits {
 
 impl<'a> ContextArbitrary<'a, Context> for syn::Receiver {
     fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
-        let opt_ref: Option<Option<Lifetime>> = c_arbitrary(ctx, u)?;
         Ok(syn::Receiver {
             attrs: vec![],
-            reference: opt_ref.map(|ref_| (parse_quote!(&), ref_)),
+            reference: lazy_maybe!(u, (parse_quote!(&), c_arbitrary(ctx, u)?)),
             mutability: None,
             self_token: parse_quote!(self),
         })
@@ -1292,17 +1422,15 @@ impl<'a> ContextArbitrary<'a, Context> for syn::Receiver {
 impl<'a> ContextArbitrary<'a, Context> for Block {
     fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
         let stmts: Vec<Stmt>;
-        if ctx.regard_semantics {
-            let final_stmt = lazy_choose!(u, {
-                Stmt::Expr(c_arbitrary(ctx, u)?),
-                Stmt::Semi(Expr::Return(c_arbitrary(ctx, u)?), parse_quote!(;))
-            });
+        if ctx.regard_semantics || Arbitrary::arbitrary(u)? {
+            // TODO: if there is a (guaranteed) return/break somewhere, the last
+            //       statement can be skipped
+            let final_stmt = Stmt::Expr(c_arbitrary(ctx, u)?);
             let init_stmts: ContextArbitraryIter<Stmt, Context>
                 = c_arbitrary_iter(ctx, u);
             stmts = init_stmts
-                .chain(iter::once(final_stmt))
+                .chain(iter::once(Ok(final_stmt)))
                 .collect::<Result<Vec<Stmt>>>()?;
-             
         } else {
             stmts = c_arbitrary(ctx, u)?
         }
@@ -1318,9 +1446,14 @@ impl<'a> ContextArbitrary<'a, Context> for Stmt {
         lazy_choose!(u, {
             Stmt::Local(c_arbitrary(ctx, u)?),
             Stmt::Item(c_arbitrary(ctx, u)?),
-            // TODO: expr should only be last in a block
-            // |ctx, u| Ok(Stmt::Expr(c_arbitrary(ctx, u)?)) ,
-            Stmt::Semi(c_arbitrary(ctx, u)?, parse_quote!(;)),
+            Stmt::Semi({
+                if ctx.regard_semantics {
+                    let ty = pick_type(ctx, u)?;
+                    with_type!(ctx, ty, c_arbitrary(ctx, u)?)
+                } else {
+                    c_arbitrary(ctx, u)?
+                }
+            }, parse_quote!(;)),
         })
     }
 }
@@ -1328,6 +1461,8 @@ impl<'a> ContextArbitrary<'a, Context> for Stmt {
 impl<'a> ContextArbitrary<'a, Context> for Local {
     fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
         let pat;
+        let init;
+        // TODO: allow uninitialized variables
         if ctx.regard_semantics {
             let ty: semantics::Type = pick_type(ctx, u)?;
             let pat_and_vars = pattern_of_type(ctx, u, &ty)?;
@@ -1336,14 +1471,16 @@ impl<'a> ContextArbitrary<'a, Context> for Local {
             for (var, sub_ty) in vars {
                add_var(ctx, var, sub_ty.clone());
             }
+        init = Some((parse_quote!(=), with_type!(ctx, ty, c_arbitrary(ctx, u)?)));
         } else {
             pat = irrefutable!(ctx, c_arbitrary(ctx, u)?);
+            init = lazy_maybe!(u, (parse_quote!(=), c_arbitrary(ctx, u)?));
         }
         Ok(Local {
             attrs: vec![],
             pat,
             let_token: parse_quote!(let),
-            init: lazy_maybe!(u, (parse_quote!(=), c_arbitrary(ctx, u)?)),
+            init,
             semi_token: parse_quote!(;),
         })
     }
@@ -1364,7 +1501,7 @@ fn pattern_of_type<'a, 'b>(
             attrs:vec![],
             underscore_token:parse_quote!(_)
         }), vec![]),
-        ty.name.starts_with("Tuple") => {
+        ty.name.starts_with("#Tuple") => {
             let mut fields = vec![];
             let mut sub_types = vec![];
             for type_arg in &ty.type_args {
@@ -1394,69 +1531,74 @@ fn pattern_of_type<'a, 'b>(
 }
 
 impl<'a> ContextArbitrary<'a, Context> for Expr {
-    // #[add_depth(ctx)]
     fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
-        let place_expr = !ctx.regard_semantics || ctx.is_place_expression;
-        let within_depth = ctx.depth < MAX_DEPTH;
-        ctx.depth += 1;
-        let expr = guarded_lazy_choose!(u, {
-            within_depth => Expr::Array(c_arbitrary(ctx, u)?),
-            within_depth => Expr::Tuple(c_arbitrary(ctx, u)?),
-            within_depth => Expr::Path(c_arbitrary(ctx, u)?),
-            within_depth => Expr::Lit(c_arbitrary(ctx, u)?),
-            within_depth => Expr::Binary(c_arbitrary(ctx, u)?),
-            within_depth => Expr::Assign(c_arbitrary(ctx, u)?),
-            within_depth => Expr::AssignOp(c_arbitrary(ctx, u)?),
-            within_depth => Expr::Await(c_arbitrary(ctx, u)?),
-            within_depth => Expr::Block(c_arbitrary(ctx, u)?),
-            within_depth => Expr::Box(c_arbitrary(ctx, u)?),
-            within_depth => Expr::Call(c_arbitrary(ctx, u)?),
-            within_depth => Expr::Cast(c_arbitrary(ctx, u)?),
-            within_depth => Expr::Closure(c_arbitrary(ctx, u)?),
-            within_depth => Expr::Group(c_arbitrary(ctx, u)?),
-            within_depth => Expr::If(c_arbitrary(ctx, u)?),
-            within_depth => Expr::Loop(c_arbitrary(ctx, u)?),
-            within_depth => Expr::Match(c_arbitrary(ctx, u)?),
-            within_depth => Expr::MethodCall(c_arbitrary(ctx, u)?),
-            within_depth => Expr::Paren(c_arbitrary(ctx, u)?),
-            within_depth => Expr::Range(c_arbitrary(ctx, u)?),
-            within_depth => Expr::Reference(c_arbitrary(ctx, u)?),
-            within_depth => Expr::Repeat(c_arbitrary(ctx, u)?),
-            within_depth && !ctx.regard_semantics => Expr::Struct(c_arbitrary(ctx, u)?),
-            within_depth => Expr::Try(c_arbitrary(ctx, u)?),
-            within_depth => Expr::Unary(c_arbitrary(ctx, u)?),
-            within_depth => Expr::Async(c_arbitrary(ctx, u)?),
-            within_depth => Expr::Break(c_arbitrary(ctx, u)?),
-            within_depth => Expr::Continue(c_arbitrary(ctx, u)?),
-            within_depth => Expr::ForLoop(c_arbitrary(ctx, u)?),
-            // true => Expr::Let(c_arbitrary(ctx, u)?),
-            within_depth => Expr::TryBlock(c_arbitrary(ctx, u)?),
-            within_depth => Expr::While(c_arbitrary(ctx, u)?),
-            // Generators are still an unstable feature
-            // true => Expr::Yield(c_arbitrary(ctx, u)?),
-            within_depth => Expr::Return(c_arbitrary(ctx, u)?),
-
-            // Unsafe(ExprUnsafe),
-            within_depth && place_expr => Expr::Index(c_arbitrary(ctx, u)?),
-            within_depth && place_expr => Expr::Field(c_arbitrary(ctx, u)?),
-            // deref
-            within_depth && place_expr => Expr::Unary(ExprUnary {
-               attrs: vec!(),
-               op: parse_quote!(*),
-               // In case this is selected when regard semantics is false
-               expr: place_expression!(ctx, c_arbitrary(ctx, u)?)
-            }),
-            true => Expr::Lit(c_arbitrary(ctx, u)?),
-            place_expr => local_var_expr(ctx, u)?,
-        })?;
-        ctx.depth -= 1;
-        // Place expressions do not need to be paranthesized ordinarily,
-        // but since we can generate arbitrary expressions when we disregard 
-        // semantics we need to parenthesize them in that case
-        if !ctx.regard_semantics && ctx.is_place_expression {
-            return Ok(parenthesize_expr(12, expr));
+        if ctx.regard_semantics {
+            println!("Expected type: {:?}", ctx.expected_type);
+            let expr = construct_value(ctx, u, ctx.expected_type.clone())?;
+            return from_sem_expr(u, expr)
         } else {
-            return Ok(expr);
+            let place_expr = !ctx.regard_semantics || ctx.is_place_expression;
+            let within_depth = ctx.depth < MAX_DEPTH;
+            ctx.depth += 1;
+            let expr = guarded_lazy_choose!(u, {
+                within_depth => Expr::Array(c_arbitrary(ctx, u)?),
+                within_depth => Expr::Tuple(c_arbitrary(ctx, u)?),
+                within_depth => Expr::Path(c_arbitrary(ctx, u)?),
+                within_depth => Expr::Binary(c_arbitrary(ctx, u)?),
+                within_depth => Expr::Assign(c_arbitrary(ctx, u)?),
+                within_depth => Expr::AssignOp(c_arbitrary(ctx, u)?),
+                within_depth => Expr::Await(c_arbitrary(ctx, u)?),
+                within_depth => Expr::Block(c_arbitrary(ctx, u)?),
+                within_depth => Expr::Box(c_arbitrary(ctx, u)?),
+                within_depth => Expr::Call(c_arbitrary(ctx, u)?),
+                within_depth => Expr::Cast(c_arbitrary(ctx, u)?),
+                within_depth => Expr::Closure(c_arbitrary(ctx, u)?),
+                within_depth => Expr::Group(c_arbitrary(ctx, u)?),
+                within_depth => Expr::If(c_arbitrary(ctx, u)?),
+                within_depth => Expr::Loop(c_arbitrary(ctx, u)?),
+                within_depth => Expr::Match(c_arbitrary(ctx, u)?),
+                within_depth => Expr::MethodCall(c_arbitrary(ctx, u)?),
+                within_depth => Expr::Paren(c_arbitrary(ctx, u)?),
+                within_depth => Expr::Range(c_arbitrary(ctx, u)?),
+                within_depth => Expr::Reference(c_arbitrary(ctx, u)?),
+                within_depth => Expr::Repeat(c_arbitrary(ctx, u)?),
+                within_depth && !ctx.regard_semantics => Expr::Struct(c_arbitrary(ctx, u)?),
+                within_depth => Expr::Try(c_arbitrary(ctx, u)?),
+                within_depth => Expr::Unary(c_arbitrary(ctx, u)?),
+                within_depth => Expr::Async(c_arbitrary(ctx, u)?),
+                within_depth => Expr::Break(c_arbitrary(ctx, u)?),
+                within_depth => Expr::Continue(c_arbitrary(ctx, u)?),
+                within_depth => Expr::ForLoop(c_arbitrary(ctx, u)?),
+                // only used in if let and while let expressions
+                // true => Expr::Let(c_arbitrary(ctx, u)?),
+                within_depth => Expr::TryBlock(c_arbitrary(ctx, u)?),
+                within_depth => Expr::While(c_arbitrary(ctx, u)?),
+                // Generators are still an unstable feature
+                // true => Expr::Yield(c_arbitrary(ctx, u)?),
+                within_depth => Expr::Return(c_arbitrary(ctx, u)?),
+
+                // Unsafe(ExprUnsafe),
+                within_depth && place_expr => Expr::Index(c_arbitrary(ctx, u)?),
+                within_depth && place_expr => Expr::Field(c_arbitrary(ctx, u)?),
+                // deref
+                within_depth && place_expr => Expr::Unary(ExprUnary {
+                   attrs: vec!(),
+                   op: parse_quote!(*),
+                   // In case this is selected when regard semantics is false
+                   expr: place_expression!(ctx, c_arbitrary(ctx, u)?)
+                }),
+                true => Expr::Lit(c_arbitrary(ctx, u)?),
+                place_expr => local_var_expr(ctx, u)?,
+            })?;
+            ctx.depth -= 1;
+            // Place expressions do not need to be paranthesized ordinarily,
+            // but since we can generate arbitrary expressions when we disregard 
+            // semantics we need to parenthesize them in that case
+            if !ctx.regard_semantics && ctx.is_place_expression {
+                return Ok(parenthesize_expr(12, expr));
+            } else {
+                return Ok(expr);
+            }
         }
     }
 }
@@ -1496,7 +1638,6 @@ impl<'a> ContextArbitrary<'a, Context> for ExprWhile {
             label: c_arbitrary(ctx, u)?,
             while_token: parse_quote!(while),
             cond: if Arbitrary::arbitrary(u)? {
-               // TODO: make a parenthesize_block function
                parens_block!(ctx, c_arbitrary(ctx, u)?)
             } else {
                let_guard(ctx, u)?
@@ -1656,11 +1797,12 @@ impl<'a> ContextArbitrary<'a, Context> for ExprReference {
 
 impl<'a> ContextArbitrary<'a, Context> for ExprRange {
     fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
-        let from = lazy_maybe!(u, parens_ex!(2, ctx, c_arbitrary(ctx, u)?));
+        // TODO: what prescedence do the left and right arms really need?
+        let from = lazy_maybe!(u, parens_ex!(3, ctx, c_arbitrary(ctx, u)?));
         let limits = c_arbitrary(ctx, u)?;
         // Closed ranges must have a `to`
         let to = match limits {
-            RangeLimits::Closed(_) => Some(parens_ex!(2, ctx, c_arbitrary(ctx, u)?)),
+            RangeLimits::Closed(_) => Some(parens_ex!(3, ctx, c_arbitrary(ctx, u)?)),
             RangeLimits::HalfOpen(_) => lazy_maybe!(u, parens_ex!(2, ctx, c_arbitrary(ctx, u)?))
         };
         Ok(ExprRange {
@@ -1699,24 +1841,35 @@ impl<'a> ContextArbitrary<'a, Context> for MethodTurbofish {
 
 impl<'a> ContextArbitrary<'a, Context> for GenericMethodArgument {
     fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
-        let enum_choices = [
-            // TODO: find out exactly what goes in the argument as Expr is surely to general
-            // |ctx, u| Ok(GenericMethodArgument::Const(c_arbitrary(ctx, u)?)),
-            |ctx, u| Ok(GenericMethodArgument::Type(c_arbitrary(ctx, u)?)),
-        ];
-        let choice = u.choose(&enum_choices)?;
-        return choice(ctx, u);
+        lazy_choose!(u, {
+            // https://github.com/rust-lang/rfcs/blob/master/text/2000-const-generics.md
+            // const generics arguments need to be either 
+            //  * variables,
+            //  * literals,
+            //  * blocks (w/o labels)
+            GenericMethodArgument::Const(is_const!(ctx, lazy_choose!(u, {
+               Expr::Path(c_arbitrary(ctx, u)?),
+               Expr::Lit(c_arbitrary(ctx, u)?),
+               Expr::Block(no_block_labels!(ctx, c_arbitrary(ctx, u)?))
+            })?)),
+            GenericMethodArgument::Type(c_arbitrary(ctx, u)?),
+        })
     }
 }
 
 impl<'a> ContextArbitrary<'a, Context> for ExprMatch {
     fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
+        let mut arms = unwrap_nev(c_arbitrary(ctx, u)?);
+        // remove trailing comma
+        if Arbitrary::arbitrary(u)? {
+            arms.last_mut().map(|a: &mut Arm| a.comma = None);
+        }
         Ok(ExprMatch {
             attrs: vec![],
             match_token: parse_quote!(match),
             expr: parens_block!(ctx, c_arbitrary(ctx, u)?),
             brace_token: Brace { span: dummy_span() },
-            arms: unwrap_nev(c_arbitrary(ctx, u)?),
+            arms
         })
     }
 }
@@ -1724,8 +1877,12 @@ impl<'a> ContextArbitrary<'a, Context> for ExprMatch {
 impl<'a> ContextArbitrary<'a, Context> for Arm {
     fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
         let body = c_arbitrary(ctx, u)?;
-        // TODO: add logic to allow for the last item to not have a comma
-        let comma = if let Expr::Block(_) = body {
+        let comma = if match body {
+            // things ending in blocks don't need a comma
+            Expr::Block(_) | Expr::Loop(_) | Expr::ForLoop(_) | Expr::If(_) |
+            Expr::TryBlock(_) => true,
+            _ => false
+        } {
             maybe(u, parse_quote!(,))
         } else {
             Some(parse_quote!(,))
@@ -1758,7 +1915,6 @@ impl<'a> ContextArbitrary<'a, Context> for ExprLet {
         Ok(ExprLet {
             attrs: vec![],
             let_token: parse_quote!(let),
-            // TODO: special case for if let
             pat: c_arbitrary(ctx, u)?,
             eq_token: parse_quote!(=),
             expr: rhs!(ctx, c_arbitrary(ctx, u)?),
@@ -1787,9 +1943,9 @@ impl<'a> ContextArbitrary<'a, Context> for ExprIf {
             } else {
                let_guard(ctx, u)?
             },
-            then_branch: c_arbitrary(ctx, u)?,
-            else_branch: c_arbitrary::<Context, Option<Box<Expr>>>(ctx, u)?
-                .map(|e| (parse_quote!(else), e)),
+            then_branch: no_block_labels!(ctx, c_arbitrary(ctx, u)?),
+            else_branch: lazy_maybe!(u, (parse_quote!(else),
+                                         no_block_labels!(ctx, c_arbitrary(ctx, u)?)))
         })
     }
 }
@@ -1859,7 +2015,7 @@ impl<'a> ContextArbitrary<'a, Context> for ExprClosure {
             movability: None, // maybe(u, parse_quote!(static)),
             capture: maybe(u, parse_quote!(move)),
             or1_token: parse_quote!(|),
-            inputs: c_arbitrary(ctx, u)?,
+            inputs: irrefutable!(ctx, c_arbitrary(ctx, u)?),
             or2_token: parse_quote!(|),
             // body needs to be a block if the closure has an output type
             body: if ReturnType::Default == output {
@@ -1900,7 +2056,7 @@ impl<'a> ContextArbitrary<'a, Context> for ExprBreak {
             attrs: vec![],
             break_token: parse_quote!(break),
             label: c_arbitrary(ctx, u)?,
-            expr: lazy_maybe!(u, c_arbitrary(ctx, u)?),
+            expr: lazy_maybe!(u, Box::new(parenthesize_label(c_arbitrary(ctx, u)?))),
         })
     }
 }
@@ -1909,12 +2065,11 @@ impl<'a> ContextArbitrary<'a, Context> for ExprBlock {
     fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
         Ok(ExprBlock {
             attrs: vec![],
-            label: if ctx.allow_block_labels {
-               ctx.allow_block_labels = true;
-               c_arbitrary(ctx, u)?
-            } else {
-               None
-            },
+            label: guarded_lazy_choose!(u, {
+               true => None,
+               // requires #![feature(label_break_value)]
+               !ctx.regard_semantics && ctx.allow_block_labels => c_arbitrary(ctx, u)?
+            })?,
             block: c_arbitrary(ctx, u)?,
         })
     }
@@ -2112,8 +2267,7 @@ impl<'a> ContextArbitrary<'a, Context> for Lifetime {
 impl<'a> ContextArbitrary<'a, Context> for syn::Path {
     fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
         Ok(syn::Path {
-            // TODO: look into when there should be a leading colon
-            leading_colon: None,
+            leading_colon: maybe(u, parse_quote!(::)),
             segments: unwrap_nep(c_arbitrary(ctx, u)?),
         })
     }
@@ -2123,8 +2277,61 @@ impl<'a> ContextArbitrary<'a, Context> for PathSegment {
     fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
         Ok(PathSegment {
             ident: c_arbitrary(ctx, u)?,
-            // TODO: add path arguments
-            arguments: PathArguments::None,
+            arguments: guarded_lazy_choose!(u, {
+                true => PathArguments::None,
+                !ctx.no_generics => PathArguments::AngleBracketed(c_arbitrary(ctx, u)?),
+                // TODO: make sure that Fn(..) and FnOnce(..) type paths can be 
+                // generated where appropriate
+                // PathArguments::Parenthesized(c_arbitrary(ctx, u)?)
+            })?
+        })
+    }
+}
+
+impl<'a> ContextArbitrary<'a, Context> for AngleBracketedGenericArguments {
+    fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
+        Ok(AngleBracketedGenericArguments {
+            // NOTE: always generates turbofish arguments
+            colon2_token: parse_quote!(::),
+            lt_token: parse_quote!(<),
+            args: c_arbitrary(ctx, u)?,
+            gt_token: parse_quote!(>)
+        })
+    }
+}
+
+impl<'a> ContextArbitrary<'a, Context> for GenericArgument {
+    fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
+        lazy_choose!(u, {
+            GenericArgument::Lifetime(c_arbitrary(ctx, u)?),
+            GenericArgument::Type(c_arbitrary(ctx, u)?),
+            GenericArgument::Binding(c_arbitrary(ctx, u)?),
+            GenericArgument::Constraint(c_arbitrary(ctx, u)?),
+            GenericArgument::Const(is_const!(ctx, lazy_choose!(u, {
+               Expr::Path(c_arbitrary(ctx, u)?),
+               Expr::Lit(c_arbitrary(ctx, u)?),
+               Expr::Block(no_block_labels!(ctx, c_arbitrary(ctx, u)?))
+            })?)),
+        })
+    }
+}
+
+impl<'a> ContextArbitrary<'a, Context> for Binding {
+    fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
+        Ok(Binding {
+            ident: c_arbitrary(ctx, u)?,
+            eq_token: parse_quote!(=),
+            ty: c_arbitrary(ctx, u)?
+        })
+    }
+}
+
+impl<'a> ContextArbitrary<'a, Context> for Constraint {
+    fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
+        Ok(Constraint {
+            ident: c_arbitrary(ctx, u)?,
+            colon_token: parse_quote!(:),
+            bounds: c_arbitrary(ctx, u)?
         })
     }
 }

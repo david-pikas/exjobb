@@ -24,4 +24,7 @@ scoped-tls = "1.0"
 quote = "1.0"
 rand = "0.8"
 lazy_static = "1.4"
-add_depth = { path = "add_depth" }
+
+# for profiling
+[profile.release]
+debug = true

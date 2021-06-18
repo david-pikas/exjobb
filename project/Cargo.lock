@@ -3,14 +3,6 @@
 version = 3
 
 [[package]]
-name = "add_depth"
-version = "0.1.0"
-dependencies = [
- "quote",
- "syn",
-]
-
-[[package]]
 name = "annotate-snippets"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -824,7 +816,6 @@ dependencies = [
 name = "rustsmith"
 version = "0.1.0"
 dependencies = [
- "add_depth",
  "arbitrary",
  "chrono",
  "ctrlc",

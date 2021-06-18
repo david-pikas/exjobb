@@ -1,3 +1,5 @@
+#![feature(map_try_insert)]
+
 #[macro_use]
 mod parser_wrapper;
 pub use parser_wrapper::parse;
