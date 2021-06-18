@@ -1,0 +1,11 @@
+error: expected type, found `{`
+ --> ./output_files/generated_code.rs:1:82
+  |
+1 | ...(break 'ﾭ႐Ꞛ𓀼ᒵ : { }) . 𓅔ϪԐ𖼶𒎈ῴỿڢ𒇗ﶇ𐌲 :: < [& mut r#ளℌฃ𓇇ꬮ𞠈ൕꩇᨚ :: 𒁓𐤒ꢶ𐘗Ǔ𛁓𑂆] > ()) *= [] {...
+  |                  - ^ expected type
+  |                  |
+  |                  tried to parse a type due to this type ascription
+  |
+  = note: `#![feature(type_ascription)]` lets you annotate an expression with a type: `<expr>: <type>`
+  = note: see issue #23416 <https://github.com/rust-lang/rust/issues/23416> for more information
+

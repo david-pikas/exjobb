@@ -17,7 +17,7 @@ pub struct Context {
     pub allow_type_annotations: bool,
     // to avoid nonsensical code of the type let foo = return bar;
     pub has_value: bool,
-    /// (Semantics only) E.g. valid targets forvariable assignments like 
+    /// (Semantics only) E.g. valid targets for variable assignments like 
     /// foo, bar[2], baz.quux
     // https://doc.rust-lang.org/stable/reference/expressions.html#place-expressions-and-value-expressions
     pub is_place_expression: bool,
@@ -32,8 +32,7 @@ pub struct Context {
     pub is_lifetime: bool,
     /// Ranges are not allowed in reference patterns
     pub allow_range: bool,
-    /// Blocks with labels don't make sense e.g. as closure bodies. 
-    /// Only ever applies to the outer block
+    /// Closure blocks can't have labels
     pub allow_block_labels: bool,
     /// If for example the cond of an if contains a block,
     /// the block needs to be parenthesized
@@ -43,7 +42,11 @@ pub struct Context {
     /// (Semantics only) does the file have a main function?
     pub has_main: bool,
     /// (Semantics only) are non ascii identifiers allowed?
-    pub non_ascii: bool
+    pub non_ascii: bool,
+    /// Is this a valid const expression?
+    pub is_const: bool,
+    /// Some paths like crate paths don't make sense to have generics
+    pub no_generics: bool,
 }
 impl Context {
     pub fn make_context(regard_semantics: bool) -> Context {
@@ -65,9 +68,11 @@ impl Context {
             allow_range: true,
             allow_block_labels: true,
             parenthesize_block: false,
-            expected_type: crate::make_type!(Unit),
-            has_main: false,
+            expected_type: crate::make_type!(()),
+            has_main: true,
             non_ascii: false,
+            is_const: false,
+            no_generics: false,
         }
     }
 }
@@ -144,3 +149,14 @@ macro_rules! parens_block {
 macro_rules! with_type {
 ($ctx: ident, $ty: expr, $e: expr) => (with_attrs!($ctx { expected_type = $ty }, $e))
 }
+
+#[macro_export]
+macro_rules! is_const {
+($ctx: ident, $e: expr) => (with_attrs!($ctx { is_const = true }, $e))
+}
+
+#[macro_export]
+macro_rules! crate_path {
+($ctx: ident, $e: expr) => (with_attrs!($ctx { no_generics = true }, $e))
+}
+

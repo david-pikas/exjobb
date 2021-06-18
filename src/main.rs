@@ -1,3 +1,5 @@
+#![feature(map_try_insert)]
+
 use arbitrary::Unstructured;
 use quote::quote;
 use rand::{distributions, prelude::Distribution, thread_rng, Rng};
@@ -55,9 +57,11 @@ fn main() -> Result<(), MainError> {
         }).expect("Error setting the Ctl-C handler");
 
         let mut count = 0;
+        let mut errors = 0;
         while !is_interrupeted.load(Ordering::SeqCst) && match flags.repeat {
             Repeat::N(n) => n > count,
-            Repeat::Forever => true
+            Repeat::Forever => true,
+            Repeat::FirstError => 1 > errors,
         } {
             count += 1;
             let ast = gen_code(flags.use_semantics)?;
@@ -67,11 +71,14 @@ fn main() -> Result<(), MainError> {
             fs::write(filename, &code_str).expect("Failed writing file");
 
             let buf = gag::BufferRedirect::stderr().unwrap();
-            parse(filename)?;
             let mut output = String::new();
+            if let Err(e) = parse(filename) {
+                output = format!("{:?}", e).to_string();
+            }
             buf.into_inner().read_to_string(&mut output).unwrap();
 
             if !output.is_empty() {
+                errors += 1;
                 let timestamp = chrono::Utc::now().format("%Y-%m-%d:%H:%M:%S%.f");
                 fs::copy(filename, format!("possible_bugs/{}.rs", timestamp)).expect("Failed writing to file");
                 fs::copy(ast_filename, format!("possible_bugs/{}_ast.rs", timestamp)).expect("Failed writing to file");
@@ -79,7 +86,7 @@ fn main() -> Result<(), MainError> {
                 println!("({}):\n{}", timestamp, output);
             }
         }
-        println!("Finished {} tests!", count);
+        println!("Finished {} tests with {} errors", count, errors);
     };
     return Ok(())
 }
@@ -112,7 +119,7 @@ impl From<parser_wrapper::ParserError> for MainError {
     }
 }
 
-enum Repeat { N(usize), Forever }
+enum Repeat { N(usize), Forever, FirstError }
 struct Flags {
     repeat: Repeat,
     use_semantics: bool
@@ -124,14 +131,16 @@ fn parse_args(mut args: Args) -> Flags {
         use_semantics: true,
     };
     while let Some(arg) = args.next() {
-        if arg == "syntax" { flags.use_semantics = false }
-        else if arg == "-n" || arg == "--number_of_iterations" {
+        if arg == "syntax" { 
+            flags.use_semantics = false
+        } else if arg == "-n" || arg == "--number_of_iterations" {
             let n = args.next().expect("Expected value for argument")
                         .parse().expect("Error while parsing argument");
             flags.repeat = Repeat::N(n);
-        }
-        else if arg == "-r" || arg == "--repeat" {
+        } else if arg == "-r" || arg == "--repeat" {
             flags.repeat = Repeat::Forever;
+        } else if arg == "-f" || arg == "--first-error" {
+            flags.repeat = Repeat::FirstError;
         }
         
     }

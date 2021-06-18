@@ -2,7 +2,7 @@ use rustc_ap_rustc_ast::{Item, ptr::P, token::TokenKind};
 use rustc_ap_rustc_parse::parse_stream_from_source_str;
 use rustc_ap_rustc_session::parse::ParseSess;
 use rustc_ap_rustc_span::{edition::Edition, FileName, source_map::FilePathMapping};
-use rustc_ap_rustc_errors::{Diagnostic, DiagnosticBuilder};
+use rustc_ap_rustc_errors::DiagnosticBuilder;
 use rustc_ap_rustc_parse::parser::Parser;
 use std::{fs, io, path::PathBuf, str::{self, Utf8Error}};
 
@@ -10,12 +10,12 @@ use std::{fs, io, path::PathBuf, str::{self, Utf8Error}};
 pub enum ParserError {
     Utf8(Utf8Error),
     Io(io::Error),
-    Parser(Diagnostic)
+    Parser(String)
 }
 
 impl From<DiagnosticBuilder<'_>> for ParserError {
     fn from(e: DiagnosticBuilder) -> Self {
-        Self::Parser(e.into_diagnostic().unwrap().0)
+        Self::Parser(format!("{:?}", e.into_diagnostic().unwrap().0))
     }
 }
 
@@ -38,7 +38,8 @@ pub fn parse(filename: &str) -> Result<Vec<P<Item>>, ParserError> {
         let parse_sess = ParseSess::new(FilePathMapping::new(vec![]));
         let tokens = parse_stream_from_source_str(wrapped_filename, source, &parse_sess, None);
         let mut parser = Parser::new(&parse_sess, tokens, false, None);
-        let result = parser.parse_mod(&TokenKind::Eof)?.1;
+        // The conversion needs to happen inside the with_session_global call
+        let result = parser.parse_mod(&TokenKind::Eof).map_err(ParserError::from)?.1;
         Ok(result)
     })
 }

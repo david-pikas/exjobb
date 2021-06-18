@@ -4,13 +4,14 @@ use crate::context_arbitrary::{GenerationError, choose_consume};
 use crate::context_arbitrary as context_arbitrary;
 
 use super::context::Context;
+use lazy_static::lazy_static;
 
-#[derive(PartialEq, Clone)]
+#[derive(PartialEq, Clone, Debug)]
 #[allow(dead_code)]
 pub enum Mutability { Immutable, Unnasigned, Mutable }
-#[derive(PartialEq, Clone)]
+#[derive(PartialEq, Clone, Debug)]
 pub struct Lifetime(pub String);
-#[derive(PartialEq, Clone)]
+#[derive(PartialEq, Clone, Debug)]
 pub struct Type {
     pub name: String,
     pub mutability: Mutability,
@@ -19,19 +20,21 @@ pub struct Type {
     pub lt_args: Vec<Lifetime>,
     pub type_args: Vec<Type>
 }
-#[derive(PartialEq, Clone)]
+#[derive(PartialEq, Clone, Debug)]
 pub struct Kind { pub lifetimes: u8, pub types: u8 }
-#[derive(PartialEq, Clone)]
+#[derive(PartialEq, Clone, Debug)]
 pub struct Field { pub visible: bool, pub ty: Type }
-#[derive(PartialEq, Clone)]
+#[derive(PartialEq, Clone, Debug)]
+pub enum Fields { Named(HashMap<String, Field>), Unnamed(Vec<Field>) }
+#[derive(PartialEq, Clone, Debug)]
 pub struct Struct {
     pub ty: Type,
-    pub fields: HashMap<String, Field>
+    pub fields: Fields
 }
 pub type ValScope = HashMap<String, Type>;
 pub type TypeScope = HashMap<String, Kind>;
 pub type StructScope = HashMap<String, Struct>;
-#[derive(PartialEq, Clone)]
+#[derive(PartialEq, Clone, Debug)]
 pub struct Scope {
     pub owned: bool,
     pub vals: ValScope,
@@ -39,6 +42,14 @@ pub struct Scope {
     pub structs: StructScope,
 }
 pub type Stack<T> = Vec<T>;
+pub enum Expr {
+    Lit(String),
+    StructUnnamed(String, Vec<Expr>),
+    StructNamed(String, HashMap<String, Expr>),
+    Fn(String, Vec<Expr>),
+    Var(String)
+}
+
 
 impl Type {
     pub fn matches(&self, other: &Type) -> bool {
@@ -121,7 +132,7 @@ pub fn pick_var<'a, 'b>(
 
 
 #[allow(dead_code)]
-pub fn pick_type<'a>(ctx: &mut Context, u: &mut Unstructured<'a>) -> arbitrary::Result<Type> {
+pub fn pick_type<'a>(ctx: &Context, u: &mut Unstructured<'a>) -> arbitrary::Result<Type> {
     let non_empty_scopes: Vec<&Scope> =
         ctx.scopes.iter().filter(|s| !s.types.is_empty()).collect();
     let scope: &Scope = choose_consume(u, non_empty_scopes.into_iter())?;
@@ -146,10 +157,130 @@ pub fn pick_type<'a>(ctx: &mut Context, u: &mut Unstructured<'a>) -> arbitrary::
     })
 }
 
+#[allow(dead_code)]
+pub fn construct_value<'a>(ctx: &Context, u: &mut Unstructured<'a>, ty: Type) -> arbitrary::Result<Expr> {
+
+    println!("construct_value called on type {:?}", ty);
+
+    fn fields_to_struct(name: String, fields: Fields, ctx: &Context, u: &mut Unstructured) -> arbitrary::Result<Expr> {
+        println!("fields_to_struct called with: {:?}", fields);
+        match fields {
+            Fields::Named(f) if !f.is_empty() => {
+                let mut fields_expr: HashMap<String, Expr> = HashMap::new();
+                for f_name in f.keys() {
+                    fields_expr.insert(f_name.clone(), construct_value(ctx, u, f[f_name].ty.clone())?);
+                }
+                Ok(Expr::StructNamed(name, fields_expr))
+            }
+            Fields::Unnamed(f) if !f.is_empty() => {
+                let mut fields_expr = vec![];
+                for field in f.into_iter() {
+                    fields_expr.push(construct_value(ctx, u, field.ty)?);
+                }
+                Ok(Expr::StructUnnamed(name, fields_expr))
+            }
+            _ => Ok(Expr::Lit(name))
+        }
+    }
+
+    fn handle_field_generics(generics: Vec<(String, Type)>, fields: Fields) -> Fields {
+        println!("handle_field_generics called on {:?}, {:?}", generics, fields);
+        match fields {
+            Fields::Named(hmap) => {
+                let mut new_map = HashMap::new();
+                'fields: for (name, field) in &hmap {
+                    for (ty_name, ty) in &generics {
+                        if ty_name == &field.ty.name {
+                            new_map.insert(name.to_owned(), Field {
+                                ty: ty.clone(),
+                                visible: field.visible
+                            });
+                            break 'fields;
+                        }
+                    }
+                    new_map.insert(name.clone(), field.clone());
+                }
+                return Fields::Named(new_map);           
+            }
+            Fields::Unnamed(ty_vec) => {
+                let mut new_args = vec![];
+                'vec_fields: for field in ty_vec {
+                    for (ty_name, ty) in &generics {
+                        if ty_name == &field.ty.name {
+                            new_args.push(Field {ty:ty.clone(),visible:field.visible});
+                            break 'vec_fields;
+                        }
+                    }
+                    new_args.push(field.clone());
+                }
+                return Fields::Unnamed(new_args);
+            }
+        }
+    }
+
+    fn handle_arg_generics(generics: Vec<(String, Type)>, args: Vec<Type>) -> Vec<Type> {
+        println!("handle_arg_generics called on {:?}, {:?}", generics, args);
+        let mut new_args = vec![];
+        'vec_args: for arg in args {
+            for (ty_name, ty) in &generics {
+                if ty_name == &arg.name {
+                    new_args.push(ty.clone());
+                    break 'vec_args;
+                }
+            }
+            new_args.push(arg.clone());
+        }
+        return new_args;
+    }
+
+    let mut possible_exprs: Vec<Box<dyn Fn(&Context, &mut Unstructured) -> arbitrary::Result<Expr>>> = vec![];
+
+    for scope in ctx.scopes.iter() {
+        for (name, struc) in scope.structs.iter() {
+            if struc.ty.matches(&ty) {
+                // TODO: do we really need to clone this twice?
+                let type_generics = struc.ty.type_generics.clone();
+                let type_args = ty.type_args.clone();
+                possible_exprs.push(Box::new(move |ctx, u| {
+                    let generics =
+                        type_generics.clone().into_iter()
+                          .zip(type_args.clone())
+                          .collect();
+                    fields_to_struct(name.clone(), handle_field_generics(generics, struc.fields.clone()), ctx, u)
+                }));
+            }
+        }
+        for (name, var_ty) in scope.vals.iter() {
+            if var_ty.matches(&ty) {
+                possible_exprs.push(Box::new(move |_,_| Ok(Expr::Var(name.clone()))));
+            } else if var_ty.name == "#Fn" && var_ty.type_args[1].matches(&ty) {
+                println!("var_ty: {:?}", var_ty);
+                let type_generics = var_ty.type_generics.clone();
+                possible_exprs.push(Box::new(move |ctx, u| {
+                    let mut args = vec![];
+                    let generics =
+                        type_generics.clone().into_iter()
+                          .map(|name| Ok((name, pick_type(ctx, u)?)))
+                          .collect::<arbitrary::Result<Vec<(String, Type)>>>()?;
+                    for arg in handle_arg_generics(generics, var_ty.type_args[0].type_args.clone()) {
+                        args.push(construct_value(ctx, u, arg)?);
+                    }
+                    Ok(Expr::Fn(name.clone(), args))
+                }));
+            }
+        }
+    }
+
+    if possible_exprs.is_empty() {
+        println!("Couldn't find any values for type {:?}", ty);
+    }
+    let choice = choose_consume(u, possible_exprs.iter())?;
+    return choice(ctx, u);
+}
+
 
 macro_rules! make_val {
-    ($name:ident : $($ty:tt)*) =>
-        ((stringify!($name).to_string(), make_type!($($ty)*)))
+    ($name:ident : $($ty:tt)*) => ((stringify!($name).to_string(), make_type!($($ty)*)))
 }
 
 #[macro_export]
@@ -250,7 +381,7 @@ macro_rules! make_kind {
     ($name:ident{$ty:expr}) => {
         (stringify!($name).to_string(), crate::semantics::Kind { lifetimes: 0, types: $ty })
     };
-    (()) => ("#Unit".to_string(), crate::semantics::Kind { lifetimes: 0, types: 0 });
+    (()) => (("#Unit".to_string(), crate::semantics::Kind { lifetimes: 0, types: 0 }));
     (($len:expr;)) => {
         (format!("#Tuple{}", $len), crate::semantics::Kind { lifetimes: 0, types: $len })
     };
@@ -259,76 +390,130 @@ macro_rules! make_kind {
     };
 }
 
-#[allow(unused_macros)]
+lazy_static! {
+    static ref GEN_NAMES: [Type; 12] = [
+        make_type!(A), make_type!(B), make_type!(C), make_type!(D),
+        make_type!(E), make_type!(F), make_type!(G), make_type!(H),
+        make_type!(I), make_type!(J), make_type!(K), make_type!(L),
+    ];
+    static ref GEN_STRING: Vec<String> = "ABCDEFGHIJKL".chars().map(|x| x.to_string()).collect();
+}
+
 macro_rules! make_struct {
+    (()) => (("#Unit".to_string(), crate::semantics::Struct {
+        ty: make_type!(()),
+        fields: Fields::Unnamed(vec![])
+    }));
+    (($len:expr;)) => ((format!("#Tuple{}", $len), crate::semantics::Struct {
+        ty: Type {
+            name: format!("#Tuple{}", $len),
+            mutability: Mutability::Immutable,
+            lt_args: vec![],
+            lt_generics: vec![],
+            type_generics: GEN_STRING[0..$len].to_vec(),
+            type_args: GEN_NAMES[0..$len].to_vec()
+        },
+        fields: Fields::Unnamed(GEN_NAMES[0..$len].iter().map(|ty| Field { visible: true, ty: ty.clone() }).collect())
+    }));
+    ($(:$ty:ident:)? $name:ident$([$($gen:tt)*])? ) =>
+        (make_struct!($(:$ty:)? $name$([$($gen)*])? {}));
+    ($name:ident$([$($gen:tt)*])? ( $($fields:tt)* )) =>
+        (make_struct!(:$name:$name$([$($gen)*])? ( $($fields)* )));
     ($name:ident$([$($gen:tt)*])? { $($fields:tt)* }) =>
-        (make_struct!($name::name$([$($gen)*])? { $($fields)* }));
-    ($ty:ident :: $name:ident $([$($gen:tt)*])? { $($fields:tt)* }) =>
+        (make_struct!(:$name:$name$([$($gen)*])? { $($fields)* }));
+    (:$ty:ident: $name:ident $([$($gen:tt)*])? ( $($fields:tt)* )) =>
         ((stringify!($name).to_string(), crate::semantics::Struct {
-            ty: make_type!($ty$({$($gen)*})?),
-            fields: parse_fields!(($fields)*)
+            ty: make_type!($ty$({$($gen)*}[$($gen)*])?),
+            fields: parse_unnamed_fields!(;$($fields)*,)
+        }));
+    (:$ty:ident: $name:ident $([$($gen:tt)*])? { $($fields:tt)* }) =>
+        ((stringify!($name).to_string(), crate::semantics::Struct {
+            ty: make_type!($ty$({$($gen)*}[$($gen)*])?),
+            fields: parse_named_fields!(;$($fields)*)
         }))
 }
 
 #[allow(unused_macros)]
-macro_rules! parse_fields {
-    ($(,$fields:expr)*;$(pub)? $name:ident : $ty:ident$({$($gen:tt)*})?$([$($arg:tt)*])?, $($rest:tt)*) => 
-        (parse_fields!($(,$fields:expr)*;$(pub)? $name #($ty$({$($get)*})?$([$($arg:tt)*])?), $($rest)*));
-    ($(,$fields:expr)*;pub $name:ident : #($($ty:tt)*), $($rest:tt)*) => {
-        parse_fields!($(,$fields)*, crate::semantics::Field {
+macro_rules! parse_unnamed_fields {
+    ($(,$fields:expr)*;$(,)?) => (Fields::Unnamed(vec![$($fields),*]));
+    ($(,$fields:expr)*; $ty:ident$({$($gen:tt)*})? $([$($arg:tt)*])?, $($rest:tt)*) => {
+        parse_unnamed_fields!($(,$fields)*; #($ty$({$($gen)*})?$([$($arg)*])?), $($rest)*)
+    };
+    ($(,$fields:expr)*;pub #($($ty:tt)*), $($rest:tt)*) => {
+        parse_unnamed_fields!($(,$fields)*, crate::semantics::Field {
             visible: true,
             ty: make_type!($($ty)*; $($rest)*)
         }; $($rest)*);
     };
-    ($(,$fields:expr)*;$name:ident : #($($ty:tt)*), $($rest:tt)*) => {
-        parse_fields!($(,$fields)*, crate::semantics::Field {
+    ($(,$fields:expr)*; #($($ty:tt)*), $($rest:tt)*) => {
+        parse_unnamed_fields!($(,$fields)*, crate::semantics::Field {
             visible: false,
-            ty: make_type!($($ty)*; $($rest)*)
+            ty: make_type!($($ty)*)
         }; $($rest)*);
     };
 }
+
+macro_rules! parse_named_fields {
+    ($(,$fields:expr)*;) => (Fields::Named([$($fields),*].iter().cloned().collect()));
+    ($(,$fields:expr)*;$(pub)? $name:ident : $ty:ident$({$($gen:tt)*})?$([$($arg:tt)*])?, $($rest:tt)*) => 
+        (parse_named_fields!($(,$fields:expr)*;$(pub)? $name : #($ty$({$($get)*})?$([$($arg:tt)*])?), $($rest)*));
+    ($(,$fields:expr)*;pub $name:ident : #($($ty:tt)*), $($rest:tt)*) => {
+        parse_named_fields!($(,$fields)*, (stringify!($name).to_string(), crate::semantics::Field {
+            visible: true,
+            ty: make_type!($($ty)*; $($rest)*)
+        }; $($rest)*));
+    };
+    ($(,$fields:expr)*;$name:ident : #($($ty:tt)*), $($rest:tt)*) => {
+        parse_named_fields!($(,$fields)*, (stringify!($name).to_string(), crate::semantics::Field {
+            visible: false,
+            ty: make_type!($($ty)*; $($rest)*)
+        }; $($rest)*));
+    };
+}
+
 
 pub fn prelude_scope() -> Scope {
     Scope {
         owned: false,
         vals: [
             make_val!(drop: %Fn{T}(T)),
-            make_val!(None: Maybe{T}[T]),
-            make_val!(Some: %Fn{T}(T) -> Maybe[T]),
-            make_val!(Ok : %Fn{T,U}(T) -> Result[T,U]),
-            make_val!(Err: %Fn{T,U}(U) -> Result[T,U]),
         ].iter().cloned().collect(), 
         types: [
-            make_kind!(Send),
-            make_kind!(Sized),
-            make_kind!(Sync),
-            make_kind!(Unpin),
-            make_kind!(Drop),
-            make_kind!(Fn{1}),
-            make_kind!(FnOnce{1}),
-            make_kind!(AsMut{1}),
-            make_kind!(From{1}),
-            make_kind!(Into{1}),
-            make_kind!(DoubleEndedIterator),
-            make_kind!(ExactSizeIterator),
-            make_kind!(Extend{1}),
-            make_kind!(IntoIterator),
-            make_kind!(Iterator),
+            // make_kind!(Send),
+            // make_kind!(Sized),
+            // make_kind!(Sync),
+            // make_kind!(Unpin),
+            // make_kind!(Drop),
+            // make_kind!(Fn{2}),
+            // make_kind!(FnOnce{2}),
+            // make_kind!(AsMut{1}),
+            // make_kind!(From{1}),
+            // make_kind!(Into{1}),
+            // make_kind!(DoubleEndedIterator),
+            // make_kind!(ExactSizeIterator),
+            // make_kind!(Extend{1}),
+            // make_kind!(IntoIterator),
+            // make_kind!(Iterator),
             make_kind!(Option{1}),
             make_kind!(Result{2}),
-            make_kind!(Clone),
-            make_kind!(Default),
-            make_kind!(Eq),
-            make_kind!(Ord),
-            make_kind!(ParitalEq),
-            make_kind!(ParitalOrd),
-            make_kind!(ToOwned),
+            // make_kind!(Clone),
+            // make_kind!(Default),
+            // make_kind!(Eq),
+            // make_kind!(Ord),
+            // make_kind!(ParitalEq),
+            // make_kind!(ParitalOrd),
+            // make_kind!(ToOwned),
             make_kind!(Box{1}),
-            make_kind!(String),
-            make_kind!(ToString),
+            // make_kind!(String),
+            // make_kind!(ToString),
             make_kind!(Vec{1}),
         ].iter().cloned().collect(),
-        structs: HashMap::new()
+        structs: [
+            make_struct!(:Option:None[T]),
+            make_struct!(:Maybe:Some[T](T)),
+            make_struct!(:Result:Ok[R,E](R)),
+            make_struct!(:Result:Err[R,E](E)),
+        ].iter().cloned().collect()
     }
 }
 
@@ -336,7 +521,34 @@ pub fn primitive_scope() -> Scope {
     Scope {
         owned: false,
         vals: HashMap::new(),
-        structs: HashMap::new(),
+        structs: [
+            make_struct!(bool),
+            make_struct!(u8),
+            make_struct!(u16),
+            make_struct!(u32),
+            make_struct!(u64),
+            make_struct!(u128),
+            make_struct!(i8),
+            make_struct!(i16),
+            make_struct!(i32),
+            make_struct!(i64),
+            make_struct!(i128),
+            make_struct!(char),
+            make_struct!(str),
+            make_struct!(()),
+            make_struct!((2;)),
+            make_struct!((3;)),
+            make_struct!((4;)),
+            make_struct!((5;)),
+            make_struct!((6;)),
+            make_struct!((7;)),
+            make_struct!((8;)),
+            make_struct!((9;)),
+            make_struct!((10;)),
+            make_struct!((11;)),
+            make_struct!((12;))
+
+        ].iter().cloned().collect(),
         types: [
             make_kind!(bool),
             make_kind!(u8),
@@ -352,7 +564,7 @@ pub fn primitive_scope() -> Scope {
             make_kind!(char),
             make_kind!(str),
             make_kind!(String),
-            make_kind!(Unit),
+            make_kind!(()),
             make_kind!((2;)),
             make_kind!((3;)),
             make_kind!((4;)),
