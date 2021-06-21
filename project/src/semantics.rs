@@ -98,6 +98,10 @@ pub enum Expr {
 impl Type {
     pub fn matches(&self, other: &Type) -> bool {
         // println!("Checking if {:?} and {:?} match...", self, other);
+        // All types are equal to the "never" type
+        if self.name == "!" || other.name == "!" {
+            return true;
+        }
         if self.name != other.name {
             return false;
         }
@@ -209,8 +213,13 @@ pub fn pick_type<'a>(ctx: &Context, u: &mut Unstructured<'a>) -> arbitrary::Resu
     let n_of_args = kind.types;
     // TODO: add lifetimes
     // TODO: fix mutability
+    // TODO: handle not picking ! more elegantly 
     Ok(Type { 
-        name: name.to_owned(),
+        name: if name == "!" {
+            "#Unit".to_owned()
+        } else {
+            name.to_owned()
+        },
         type_args: {
             let mut type_args: Vec<Type> = vec![];
             for _ in 0..n_of_args {
@@ -356,6 +365,14 @@ macro_rules! make_val {
 
 #[macro_export]
 macro_rules! make_type {
+    (!) => (crate::semantics::Type {
+        name: "!".to_string(),
+        mutability: crate::semantics::Mutability::Immutable,
+        lt_generics: vec![],
+        type_generics: vec![],
+        lt_args: vec![],
+        type_args: vec![]
+    });
     (%Fn($($args:tt)*) $($ret:tt)*) =>
         (make_type!(%Fn{}($($args)*) $($ret)*));
     (%Fn{$($gen:tt)*}($($args:tt)*)) => 
@@ -581,7 +598,7 @@ pub fn prelude_scope() -> Scope {
                     seperator: Seperator::Comma
                 })
             })),
-            make_macro!(#(std::io::Error) : panic(|_, ctx, u| {
+            make_macro!(#(!) : panic(|_, ctx, u| {
                 Ok(MacroBody {
                     brackets: BracketType::Round,
                     tokens: vec![Token::Expr(construct_value(ctx, u, make_type!(str))?)],
@@ -690,6 +707,7 @@ pub fn primitive_scope() -> Scope {
             // make_kind!((10;)),
             // make_kind!((11;)),
             // make_kind!((12;))
+            ("!".to_string(), Kind { lifetimes: 0, types: 0 })
         ].iter().cloned().collect(),
     }
 }

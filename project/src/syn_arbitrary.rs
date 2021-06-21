@@ -1,7 +1,7 @@
 use arbitrary::Arbitrary;
 use proc_macro2::TokenStream;
 use std::{collections::{HashMap, HashSet}, iter::{self, empty}};
-use syn::{Abi, AngleBracketedGenericArguments, Arm, AttrStyle, Attribute, BareFnArg, BinOp, Binding, Block, Constraint, Expr, ExprArray, ExprAssign, ExprAssignOp, ExprAsync, ExprAwait, ExprBinary, ExprBlock, ExprBox, ExprBreak, ExprCall, ExprCast, ExprClosure, ExprContinue, ExprField, ExprForLoop, ExprGroup, ExprIf, ExprIndex, ExprLet, ExprLit, ExprLoop, ExprMacro, ExprMatch, ExprMethodCall, ExprParen, ExprPath, ExprRange, ExprReference, ExprRepeat, ExprReturn, ExprStruct, ExprTry, ExprTryBlock, ExprTuple, ExprType, ExprUnary, ExprWhile, ExprYield, Field, FieldPat, FieldValue, Fields, FieldsNamed, FieldsUnnamed, File, FnArg, GenericArgument, GenericMethodArgument, GenericParam, Generics, Ident, Index, Item, ItemConst, ItemEnum, ItemFn, ItemStatic, ItemTrait, ItemType, Label, Lifetime, Lit, Local, MacroDelimiter, Member, MethodTurbofish, Pat, PatBox, PatIdent, PatLit, PatOr, PatPath, PatRange, PatReference, PatRest, PatSlice, PatStruct, PatTuple, PatTupleStruct, PatType, PatWild, PathArguments, PathSegment, RangeLimits, Receiver, ReturnType, Signature, Stmt, Token, TraitBound, TraitBoundModifier, TraitItem, TraitItemConst, TraitItemMethod, TraitItemType, Type, TypeArray, TypeBareFn, TypeGroup, TypeImplTrait, TypeInfer, TypeParam, TypeParamBound, TypeParen, TypePath, TypePtr, TypeReference, TypeSlice, TypeTraitObject, TypeTuple, UnOp, Variadic, Variant, VisPublic, VisRestricted, Visibility, parse_quote, parse_str, punctuated::Punctuated, token::{Brace, Bracket, Group, Paren}};
+use syn::{Abi, AngleBracketedGenericArguments, Arm, AttrStyle, Attribute, BareFnArg, BinOp, Binding, Block, Constraint, Expr, ExprArray, ExprAssign, ExprAssignOp, ExprAsync, ExprAwait, ExprBinary, ExprBlock, ExprBox, ExprBreak, ExprCall, ExprCast, ExprClosure, ExprContinue, ExprField, ExprForLoop, ExprGroup, ExprIf, ExprIndex, ExprLet, ExprLit, ExprLoop, ExprMacro, ExprMatch, ExprMethodCall, ExprParen, ExprPath, ExprRange, ExprReference, ExprRepeat, ExprReturn, ExprStruct, ExprTry, ExprTryBlock, ExprTuple, ExprType, ExprUnary, ExprWhile, ExprYield, Field, FieldPat, FieldValue, Fields, FieldsNamed, FieldsUnnamed, File, FnArg, GenericArgument, GenericMethodArgument, GenericParam, Generics, Ident, Index, Item, ItemConst, ItemEnum, ItemFn, ItemStatic, ItemTrait, ItemType, Label, Lifetime, Lit, Local, MacroDelimiter, Member, MethodTurbofish, Pat, PatBox, PatIdent, PatLit, PatOr, PatPath, PatRange, PatReference, PatRest, PatSlice, PatStruct, PatTuple, PatTupleStruct, PatType, PatWild, PathArguments, PathSegment, RangeLimits, Receiver, ReturnType, Signature, Stmt, Token, TraitBound, TraitBoundModifier, TraitItem, TraitItemConst, TraitItemMethod, TraitItemType, Type, TypeArray, TypeBareFn, TypeGroup, TypeImplTrait, TypeInfer, TypeNever, TypeParam, TypeParamBound, TypeParen, TypePath, TypePtr, TypeReference, TypeSlice, TypeTraitObject, TypeTuple, UnOp, Variadic, Variant, VisPublic, VisRestricted, Visibility, parse_quote, parse_str, punctuated::Punctuated, token::{Brace, Bracket, Group, Paren}};
 use quote::quote;
 use lazy_static::lazy_static;
 
@@ -498,6 +498,8 @@ impl From<semantics::Type> for syn::Type {
           _ => None
         } {
           lit
+        } else if ty.name == "!" {
+            syn::Type::Never(TypeNever { bang_token: parse_quote!(!) })
         } else if ty.name.starts_with("#") {
             panic!("Unhandled special type: {:?}", ty);
         } else {
@@ -565,6 +567,7 @@ fn from_sem_expr(u: &mut Unstructured, ex: &semantics::Expr) -> Result<Expr> {
             "i128" => lit_of_type!(u, i128),
             "char" => lit_of_type!(u, char),
             "str" => lit_of_type!(u, &str),
+            "bool" => lit_of_type!(u, bool),
             "#Unit" => Expr::Tuple(ExprTuple {
                 attrs: vec![],
                 paren_token: Paren { span: dummy_span() },
@@ -849,14 +852,14 @@ impl<'a> ContextArbitrary<'a, Context> for ItemEnum {
                      semantics::Fields::Named(c_arbitrary_iter_with(ctx, u, |ctx, u| {
                          let ident: Ident = c_arbitrary(ctx, u)?;
                          Ok((ident.to_string(), semantics::Field {
-                            visible: Arbitrary::arbitrary(u)?,
+                            visible: true,
                             ty: pick_type(ctx, u)?
                          }))
                      }).collect::<Result<HashMap<String, semantics::Field>>>()?)
                  } else {
                       semantics::Fields::Unnamed(c_arbitrary_iter_with(ctx, u, |ctx, u| {
                           Ok(semantics::Field {
-                              visible: Arbitrary::arbitrary(u)?,
+                              visible: true,
                               ty: pick_type(ctx, u)?
                           })
                       }).collect::<Result<Vec<semantics::Field>>>()?)
@@ -867,7 +870,7 @@ impl<'a> ContextArbitrary<'a, Context> for ItemEnum {
              for (ident, fields) in fields {
                  let name = ident.to_string();
                  local_variants.push(syn::Variant {
-                     fields: fields.clone().into(),
+                     fields: remove_visibility(fields.clone().into()),
                      ident,
                      // TODO: add discriminants
                      discriminant: None,
@@ -889,6 +892,34 @@ impl<'a> ContextArbitrary<'a, Context> for ItemEnum {
             brace_token: Brace { span: dummy_span() },
             ident, generics, variants
         })
+    }
+}
+
+fn remove_visibility(fields: Fields) -> Fields {
+    match fields {
+        Fields::Named(named) => {
+            Fields::Named(FieldsNamed {
+                brace_token: named.brace_token,
+                named: named.named.into_iter().map(|field| {
+                    Field {
+                        vis: Visibility::Inherited,
+                        ..field
+                    }
+                }).collect()
+            })
+        }
+        Fields::Unnamed(unnamed) => {
+            Fields::Unnamed(FieldsUnnamed {
+                paren_token: unnamed.paren_token,
+                unnamed: unnamed.unnamed.into_iter().map(|field| {
+                    Field {
+                        vis: Visibility::Inherited,
+                        ..field
+                    }
+                }).collect()
+            })
+        }
+        Fields::Unit => Fields::Unit
     }
 }
 
@@ -2676,7 +2707,7 @@ impl<'a> ContextArbitrary<'a, Context> for Ident {
         let fst_char: char = *u.choose(fst_chars)?;
         name.push(fst_char);
         let min_l = if fst_char == '_' { 1 } else { 0 };
-        for _ in min_l..(u.int_in_range(0..=10)?) {
+        for _ in 0..(u.int_in_range(min_l..=10)?) {
            let char = *u.choose(rest_chars)?;
            name.push(char);
         }
