@@ -18,7 +18,7 @@ cargo run -- --help
 
 Can generate a fair amount of syntactically correct programs.
 
-To potential syntactically bugs have been found, namely `./interesting_cases/break_labled_block_minimal.rs` and `./interesting_cases/half_open_ranges.rs`.
+Two potential syntactically bugs have been found, namely `./interesting_cases/break_labled_block_minimal.rs` and `./interesting_cases/half_open_ranges.rs`.
 
 Only simpler syntactically valid programs can be generated. These programs sometimes fail to compile because rust is unable to infer correct types, for example programs containing the following: `drop(None)`. Another common way for programs to fail is that they contain types who's size can't be determined at runtime, e.g. recursive types
 
