@@ -45,7 +45,8 @@ where I: ExactSizeIterator<Item = T> {
     Ok(choices.nth(idx).unwrap())
 }
 
-pub struct ContextArbitraryIter<'a, 'b, 'c, El: ContextArbitrary<'a, Ctx>, Ctx> {
+pub struct ContextArbitraryIter<'a, 'b, 'c, 'd, El, Ctx> {
+    gen: Box<dyn Fn(&mut Ctx, &mut Unstructured<'a>) -> Result<El> + 'd>,
     u: &'b mut Unstructured<'a>,
     ctx: &'c mut Ctx,
     max_len: usize,
@@ -53,41 +54,93 @@ pub struct ContextArbitraryIter<'a, 'b, 'c, El: ContextArbitrary<'a, Ctx>, Ctx> 
     _marker: PhantomData<El>,
 }
 
-impl<'a, 'b, 'c, El, Ctx> Iterator for ContextArbitraryIter<'a, 'b, 'c, El, Ctx>
-where
-    El: ContextArbitrary<'a, Ctx>,
+impl<'a, 'b, 'c, 'd, El, Ctx> Iterator for ContextArbitraryIter<'a, 'b, 'c, 'd, El, Ctx>
 {
     type Item = Result<El>;
     fn next(&mut self) -> Option<Self::Item> {
         self.index += 1;
         let keep_going = self.max_len <= self.index && self.u.arbitrary().unwrap_or(false);
         if keep_going {
-            Some(c_arbitrary(self.ctx, self.u))
+            Some((self.gen)(self.ctx, self.u))
         } else {
             None
         }
     }
 }
 
-pub fn c_arbitrary_iter<'a, 'b, 'c, El, Ctx>(
+pub struct ContextArbitraryIterNonMut<'a, 'b, 'c, 'd, El, Ctx> {
+    gen: Box<dyn Fn(&Ctx, &mut Unstructured<'a>) -> Result<El> + 'd>,
+    u: &'b mut Unstructured<'a>,
+    ctx: &'c Ctx,
+    max_len: usize,
+    index: usize,
+    _marker: PhantomData<El>,
+}
+
+impl<'a, 'b, 'c, 'd, El, Ctx> Iterator for ContextArbitraryIterNonMut<'a, 'b, 'c, 'd, El, Ctx>
+{
+    type Item = Result<El>;
+    fn next(&mut self) -> Option<Self::Item> {
+        self.index += 1;
+        let keep_going = self.max_len <= self.index && self.u.arbitrary().unwrap_or(false);
+        if keep_going {
+            Some((self.gen)(self.ctx, self.u))
+        } else {
+            None
+        }
+    }
+}
+
+pub fn c_arbitrary_iter<'a, 'b, 'c, 'd, El: 'd , Ctx: 'd>(
     ctx: &'c mut Ctx,
     u: &'b mut Unstructured<'a>,
-) -> ContextArbitraryIter<'a, 'b, 'c, El, Ctx>
+) -> ContextArbitraryIter<'a, 'b, 'c, 'd, El, Ctx>
 where
     El: ContextArbitrary<'a, Ctx>,
+{
+    c_arbitrary_iter_with(ctx, u, c_arbitrary)
+}
+
+pub fn c_arbitrary_iter_with<'a, 'b, 'c, 'd, El, Ctx, F: 'd>(
+    ctx: &'c mut Ctx,
+    u: &'b mut Unstructured<'a>,
+    gen: F
+) -> ContextArbitraryIter<'a, 'b, 'c, 'd, El, Ctx>
+where
+    F: Fn(&mut Ctx, &mut Unstructured<'a>) -> Result<El>
 {
     let max_len = u.int_in_range(0..=5).unwrap();
     ContextArbitraryIter {
         u,
         ctx,
         max_len,
+        gen: Box::new(gen),
+        index: 0,
+        _marker: PhantomData,
+    }
+}
+
+pub fn c_arbitrary_iter_with_non_mut<'a, 'b, 'c, 'd, El, Ctx, F: 'd>(
+    ctx: &'c Ctx,
+    u: &'b mut Unstructured<'a>,
+    gen: F
+) -> ContextArbitraryIterNonMut<'a, 'b, 'c, 'd, El, Ctx>
+where
+    F: Fn(&Ctx, &mut Unstructured<'a>) -> Result<El>
+{
+    let max_len = u.int_in_range(0..=5).unwrap();
+    ContextArbitraryIterNonMut {
+        u,
+        ctx,
+        max_len,
+        gen: Box::new(gen),
         index: 0,
         _marker: PhantomData,
     }
 }
 
 pub struct NEVec<T>(pub Vec<T>);
-impl<'a, T, Ctx> ContextArbitrary<'a, Ctx> for NEVec<T>
+impl<'a, 'd, T, Ctx> ContextArbitrary<'a, Ctx> for NEVec<T>
 where
     T: ContextArbitrary<'a, Ctx>,
 {
@@ -102,6 +155,12 @@ where
 #[allow(dead_code)]
 pub fn unwrap_nev<T>(NEVec(contents): NEVec<T>) -> Vec<T> {
     contents
+}
+
+impl<'a, Ctx> ContextArbitrary<'a, Ctx> for () {
+    fn c_arbitrary(_ctx: &mut Ctx, _u: &mut Unstructured<'a>) -> Result<Self> {
+        Ok(())
+    }
 }
 
 #[inline(always)]

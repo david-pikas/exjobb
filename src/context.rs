@@ -54,7 +54,13 @@ impl Context {
             scopes: vec![
                 primitive_scope(),
                 prelude_scope(),
-                Scope { owned: true, vals: HashMap::new(), types: HashMap::new(), structs: HashMap::new()}
+                Scope {
+                    owned: true,
+                    vals: HashMap::new(),
+                    types: HashMap::new(),
+                    structs: HashMap::new(),
+                    macros: HashMap::new()
+                }
             ],
             regard_semantics,
             depth: 0,
