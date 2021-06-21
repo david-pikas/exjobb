@@ -1,4 +1,4 @@
-#![feature(map_try_insert)]
+#![feature(rustc_private)]
 
 #[macro_use]
 mod parser_wrapper;
