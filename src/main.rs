@@ -1,5 +1,3 @@
-#![feature(rustc_private)]
-
 use arbitrary::Unstructured;
 use quote::quote;
 use rand::{distributions, prelude::Distribution, thread_rng, Rng};
@@ -30,6 +28,9 @@ use crate::syn_arbitrary::WrappedFile;
 fn main() -> Result<(), MainError> {
 
     let flags = parse_args(env::args());
+    if flags.exit_imediately {
+        return Ok(())
+    }
 
     let ast_filename = "./output_files/ast.rs";
     let filename = "./output_files/generated_code.rs";
@@ -56,14 +57,14 @@ fn main() -> Result<(), MainError> {
         fs::write(filename, &code_str).expect("Failed writing file");
         let mut output;
         if flags.use_semantics {
+            output = parser_wrapper::compile(filename)?;
+        } else {
             let buf = gag::BufferRedirect::stderr().unwrap();
             output = String::new();
             if let Err(e) = parse(filename) {
                 output = format!("{:?}", e).to_string();
             }
             buf.into_inner().read_to_string(&mut output).unwrap();
-        } else {
-            output = parser_wrapper::compile(filename)?;
         }
 
         if !output.is_empty() {
@@ -110,25 +111,71 @@ impl From<parser_wrapper::ParserError> for MainError {
 enum Repeat { N(usize), Forever, FirstError }
 struct Flags {
     repeat: Repeat,
-    use_semantics: bool
+    use_semantics: bool,
+    exit_imediately: bool
 }
 
 fn parse_args(mut args: Args) -> Flags {
+    type Options = Vec<(Option<&'static str>, &'static str, ArgAction, &'static str)>;
+    enum ArgAction {
+        Nullary(fn (&mut Flags)),
+        Unnary(fn (&mut Flags, String)),
+        Meta(fn (&mut Flags, &Options))
+    }
     let mut flags = Flags {
         repeat: Repeat::N(1),
         use_semantics: true,
+        exit_imediately: false
     };
-    while let Some(arg) = args.next() {
-        if arg == "syntax" { 
-            flags.use_semantics = false
-        } else if arg == "-n" || arg == "--number_of_iterations" {
-            let n = args.next().expect("Expected value for argument")
-                        .parse().expect("Error while parsing argument");
-            flags.repeat = Repeat::N(n);
-        } else if arg == "-r" || arg == "--repeat" {
+    let options: Options = vec![
+        (Some("-n"), "--num_of_iterations", ArgAction::Unnary(|flags, arg| {
+            flags.repeat = Repeat::N(arg.parse().expect("Error while parsing argument"));
+        }), "Generate x programs and test them"),
+        (Some("-r"), "--repeat", ArgAction::Nullary(|flags| {
             flags.repeat = Repeat::Forever;
-        } else if arg == "-f" || arg == "--first-error" {
+        }), "Generate programs and test them untill interrupted"),
+        (Some("-f"), "--first-error", ArgAction::Nullary(|flags| {
             flags.repeat = Repeat::FirstError;
+        }), "Generate programs and test them untill one program fails"),
+        (None, "--syntax", ArgAction::Nullary(|flags| {
+            flags.use_semantics = false;
+        }), "Generate programs that are syntactically but not necessarily semantically valid"),
+        (Some("-h"), "--help", ArgAction::Meta(|flags, options| {
+            for (short_form, long_form, act, explanation) in options {
+                let arg = match act {
+                    ArgAction::Unnary(_) => "=x",
+                    _ => "  "
+                };
+                println!("  {}  {}{}   {}", 
+                    short_form.unwrap_or("  "),
+                    long_form,
+                    arg,
+                    explanation
+                );
+            }
+            flags.exit_imediately = true;
+        }), "Print this help")
+    ];
+    while let Some(arg) = args.next() {
+        // if arg == "syntax" { 
+        //     flags.use_semantics = false
+        // } else if arg == "-n" || arg == "--number_of_iterations" {
+        //     let n = args.next().expect("Expected value for argument")
+        //                 .parse().expect("Error while parsing argument");
+        //     flags.repeat = Repeat::N(n);
+        // } else if arg == "-r" || arg == "--repeat" {
+        //     flags.repeat = Repeat::Forever;
+        // } else if arg == "-f" || arg == "--first-error" {
+        //     flags.repeat = Repeat::FirstError;
+        // }
+        for (short_form, long_form, arg_action, _) in &options {
+            if &Some(arg.as_str()) == short_form || &arg == long_form {
+                match arg_action {
+                    ArgAction::Nullary(f) => f(&mut flags),
+                    ArgAction::Unnary(f) => f(&mut flags, args.next().expect("Expected value for argument")),
+                    ArgAction::Meta(f) => f(&mut flags, &options),
+                }
+            }
         }
         
     }
@@ -144,7 +191,6 @@ fn gen_code(use_semantics: bool) -> Result<syn::File, GenerationError> {
                 .sample_iter(&mut rng)
                 .take(len)
                 .collect();
-            
             let mut u = Unstructured::new(&data);
             let mut ctx = Context::make_context(use_semantics);
             make_wrapped_file(&mut ctx, &mut u)

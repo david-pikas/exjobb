@@ -47,6 +47,8 @@ pub struct Context {
     pub is_const: bool,
     /// Some paths like crate paths don't make sense to have generics
     pub no_generics: bool,
+    /// (Semantics only): is the curent struct an enum variant? if so, don't specify that the fields are pub
+    pub is_enum_variant: bool,
 }
 impl Context {
     pub fn make_context(regard_semantics: bool) -> Context {
@@ -79,6 +81,7 @@ impl Context {
             non_ascii: false,
             is_const: false,
             no_generics: false,
+            is_enum_variant: false
         }
     }
 }
@@ -166,3 +169,7 @@ macro_rules! crate_path {
 ($ctx: ident, $e: expr) => (with_attrs!($ctx { no_generics = true }, $e))
 }
 
+#[macro_export]
+macro_rules! enum_variant {
+($ctx: ident, $e: expr) => (with_attrs!($ctx { is_enum_variant = true }, $e))
+}
