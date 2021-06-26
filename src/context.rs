@@ -49,6 +49,11 @@ pub struct Context {
     pub no_generics: bool,
     /// (Semantics only): is the curent struct an enum variant? if so, don't specify that the fields are pub
     pub is_enum_variant: bool,
+    /// (Semantics only): can the type of the current expression be infered from context or does it have to be unamigious?
+    /// In a pattern, allow_ambiguity means that the pattern needs a type anotation
+    pub allow_ambiguity: bool,
+    /// To avoid patterns like `foo: bool: bool`
+    pub is_ty_pattern: bool,
 }
 impl Context {
     pub fn make_context(regard_semantics: bool) -> Context {
@@ -61,7 +66,8 @@ impl Context {
                     vals: HashMap::new(),
                     types: HashMap::new(),
                     structs: HashMap::new(),
-                    macros: HashMap::new()
+                    macros: HashMap::new(),
+                    methods: vec![]
                 }
             ],
             regard_semantics,
@@ -81,7 +87,9 @@ impl Context {
             non_ascii: false,
             is_const: false,
             no_generics: false,
-            is_enum_variant: false
+            is_enum_variant: false,
+            allow_ambiguity: false,
+            is_ty_pattern: false
         }
     }
 }
@@ -172,4 +180,24 @@ macro_rules! crate_path {
 #[macro_export]
 macro_rules! enum_variant {
 ($ctx: ident, $e: expr) => (with_attrs!($ctx { is_enum_variant = true }, $e))
+}
+
+#[macro_export]
+macro_rules! ty_ambigious {
+($ctx: ident, $e: expr) => (with_attrs!($ctx { allow_ambiguity = true }, $e))
+}
+
+#[macro_export]
+macro_rules! ty_unambigous {
+($ctx: ident, $e: expr) => (with_attrs!($ctx { allow_ambiguity = false }, $e))
+}
+
+#[macro_export]
+macro_rules! is_typed {
+($ctx: ident, $e: expr) => (with_attrs!($ctx{is_ty_pattern = true, allow_ambiguity = false}, $e))
+}
+
+#[macro_export]
+macro_rules! isnt_typed {
+($ctx: ident, $e: expr) => (with_attrs!($ctx {is_ty_pattern = false }, $e))
 }
