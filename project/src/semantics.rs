@@ -1,5 +1,7 @@
 use std::collections::HashMap;
+use std::fmt::Display;
 use std::hash::Hash;
+use std::iter;
 use std::rc::Rc;
 use arbitrary::{Arbitrary, Unstructured};
 use crate::context_arbitrary::{GenerationError, choose_consume, c_arbitrary_iter_with_non_mut};
@@ -8,6 +10,8 @@ use crate::context_arbitrary as context_arbitrary;
 use super::context::Context;
 
 #[derive(Clone, Debug)]
+/// We have statically known names for things (like bool) as well as dynamically generated ones
+/// This type allows using them interchangeably and cloning without actually copying the strings
 pub enum StringWrapper {
     Static(&'static str),
     Dynamic(Rc<String>)
@@ -85,6 +89,30 @@ pub struct Type {
     pub type_args: Vec<Type>,
     pub func: Option<Box<Func>>
 }
+impl Display for Type {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}{}{}",
+            self.name.as_str(),
+            if self.type_generics.is_empty() {
+                "".to_string()
+            } else {
+                format!("{{{}}}",
+                    self.type_generics.iter()
+                        .map(|a| format!("{}", a.as_str()))
+                        .collect::<String>()
+                )
+            },
+            if self.type_generics.is_empty() {
+                "".to_string()
+            } else {
+                format!("{{{}}}",
+                    self.type_generics.iter()
+                        .map(|a| format!("{}", a.as_str()))
+                        .collect::<String>()
+                )
+            })
+    }
+}
 #[derive(PartialEq, Clone, Debug)]
 pub struct Func {
     pub args: Vec<Type>,
@@ -95,7 +123,46 @@ pub struct Kind { pub lifetimes: u8, pub types: u8 }
 #[derive(PartialEq, Clone, Debug)]
 pub struct Field { pub visible: bool, pub ty: Type }
 #[derive(PartialEq, Clone, Debug)]
-pub enum Fields { Unnamed(Vec<Field>), Named(HashMap<StringWrapper, Field>) }
+pub enum Fields { None, Unnamed(Vec<Field>), Named(HashMap<StringWrapper, Field>) }
+pub enum FieldsIter<'a> {
+    Unnamed(std::slice::Iter<'a, Field>),
+    Named(std::collections::hash_map::Values<'a, StringWrapper, Field>),
+    None
+}
+impl<'a> Iterator for FieldsIter<'a> {
+    type Item = &'a Field;
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            FieldsIter::Unnamed(vec_iter) => vec_iter.next(),
+            FieldsIter::Named(values_iter) => values_iter.next(),
+            FieldsIter::None => None
+        }
+    }
+}
+impl Fields {
+    fn iter(&self) -> FieldsIter {
+        match self {
+            Fields::Unnamed(vec) => FieldsIter::Unnamed(vec.iter()),
+            Fields::Named(hm) => FieldsIter::Named(hm.values()),
+            Fields::None => FieldsIter::None
+        }
+    }
+}
+impl IntoIterator for Fields {
+    type Item = Field;
+
+    type IntoIter = std::vec::IntoIter<Self::Item>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        match self {
+            Fields::Unnamed(v) => v.into_iter(),
+            Fields::Named(hm) =>
+                hm.into_iter().map(|(_,v)| v)
+                    .collect::<Vec<Self::Item>>().into_iter(),
+            Fields::None => vec![].into_iter()
+        }
+    }
+}
 #[derive(PartialEq, Clone, Debug)]
 pub struct Struct {
     pub ty: Type,
@@ -152,20 +219,71 @@ pub struct Method {
     pub type_args: Vec<Type>,
     pub func: Func
 }
-pub type ValScope = HashMap<StringWrapper, Type>;
+pub type ValScope = HashMap<StringWrapper, Rc<Type>>;
 pub type TypeScope = HashMap<StringWrapper, Kind>;
-pub type StructScope = HashMap<StringWrapper, Struct>;
-pub type MacroScope = HashMap<StringWrapper, Macro>;
-pub type MethodScope = Vec<(Type, Vec<Method>)>;
-#[derive(PartialEq, Clone, Debug)]
+pub type StructScope = HashMap<StringWrapper, Rc<Struct>>;
+pub type MacroScope = HashMap<StringWrapper, Rc<Macro>>;
+pub type MethodScope = Vec<(Rc<Type>, Vec<Rc<Method>>)>;
+#[derive(Clone, Debug)]
 pub struct Scope {
     pub owned: bool,
     pub vals: ValScope,
     pub types: TypeScope,
     pub structs: StructScope,
     pub macros: MacroScope,
-    pub methods: MethodScope
+    pub methods: MethodScope,
+    pub by_ty_name: HashMap<StringWrapper, TypeIndexed>
 }
+impl PartialEq for Scope {
+    fn eq(&self, other: &Self) -> bool {
+        self.owned == other.owned &&
+        self.vals == other.vals &&
+        self.types == other.types &&
+        self.structs == other.structs &&
+        self.macros == other.macros
+    }
+}
+impl Scope {
+    fn make_ty_index(&mut self) -> &mut Self {
+        for (name, struc) in &self.structs {
+            self.by_ty_name.entry(struc.ty.name.clone())
+                .or_insert(Default::default())
+                .structs.insert(name.clone(), struc.clone());
+        }
+        for (name, val) in &self.vals {
+            if let Some(func) = &val.func {
+                self.by_ty_name.entry(func.ret_type.name.clone())
+                    .or_insert(Default::default())
+                    .vals.insert(name.clone(), val.clone());
+            } else {
+                self.by_ty_name.entry(val.name.clone())
+                    .or_insert(Default::default())
+                    .vals.insert(name.clone(), val.clone());
+            }
+        }
+        for (name, macr) in &self.macros {
+            self.by_ty_name.entry(macr.ty.name.clone())
+                .or_insert(Default::default())
+                .macros.insert(name.clone(), macr.clone());
+        }
+        for (assoc_ty, methods) in &self.methods {
+            for method in methods {
+                self.by_ty_name.entry(method.func.ret_type.name.clone())
+                    .or_insert(Default::default())
+                    .methods.push((assoc_ty.clone(), method.clone()));
+            }
+        }
+        return self;
+    }
+}
+#[derive(Clone, Debug, Default)]
+pub struct TypeIndexed {
+    pub vals: HashMap<StringWrapper, Rc<Type>>,
+    pub structs: HashMap<StringWrapper, Rc<Struct>>,
+    pub macros: HashMap<StringWrapper, Rc<Macro>>,
+    pub methods: Vec<(Rc<Type>, Rc<Method>)>
+}
+
 pub type Stack<T> = Vec<T>;
 #[derive(PartialEq, Clone, Debug)]
 pub enum Expr {
@@ -175,7 +293,8 @@ pub enum Expr {
     AssocFn(StringWrapper, Vec<Type>, StringWrapper, Vec<Type>, Vec<Expr>),
     Method(Box<Expr>, StringWrapper, Vec<Type>, Vec<Expr>),
     Var(StringWrapper),
-    Macro(StringWrapper, MacroBody)
+    Macro(StringWrapper, MacroBody),
+    ExactString(String)
 }
 
 
@@ -190,7 +309,8 @@ impl Type {
         //     println!("Checking if {:?} and {:?} match...\n", self, other);
         // }
 
-        // All types are equal to the "never" type
+        // The never type can be coerced into any type, but no type can be 
+        // coerced into the never type
 
         // \forall x: !.matches(x)
         // \forall x: x != ! ==> not x.matches(!)
@@ -211,20 +331,39 @@ impl Type {
         return true;
     }
     pub fn contains(&self, name: &StringWrapper) -> bool {
-        &self.name == name || self.type_args.iter().any(|arg| arg.contains(name))
+        &self.name == name
+        || self.type_args.iter().any(|arg| arg.contains(name))
     }
-    pub fn diff<'a>(&self, other: &'a Type) -> Option<&'a Type> {
+    pub fn diff<'a>(&'a self, other: &'a Type) -> Box<dyn Iterator<Item = (&StringWrapper, &Type)> + 'a> {
         if self.name != other.name {
-            return Some(other);
+            return Box::new(iter::once((&self.name, other)));
+        } else {
+            Box::new(
+                self.type_args.iter()
+                    .zip(other.type_args.iter())
+                    .flat_map(|(a,b)| a.diff(b))
+                    .chain(self.type_generics.iter()
+                            .zip(other.type_args.iter().skip(self.type_args.len())))
+            )
         }
-        for (self_arg, other_arg) in self.type_args.iter().zip(other.type_args.iter()) {
-            if let Some(result) = self_arg.diff(other_arg) {
-                return Some(result);
-            }
+    }
+    pub fn replace(&self, name: &StringWrapper, other: &Type) -> Type {
+        if &self.name == name {
+            return other.clone()
         }
-        return None;
+        Type {
+            type_args: self.type_args.iter().map(|arg| arg.replace(name, other)).collect(),
+            ..self.clone()
+        }
+    }
+    pub fn is_sized_by(&self, name: &StringWrapper) -> bool {
+        !INDIRECT_TYPES.contains(&name.as_str()) &&
+        (&self.name == name
+         || self.type_args.iter().any(|arg| arg.is_sized_by(name)))
     }
 }
+
+const INDIRECT_TYPES: [&str; 4] = ["Rc", "Vec", "Cow", "Arc"];
 
 #[allow(dead_code)]
 pub fn push_scope(ctx: &mut Context) {
@@ -235,6 +374,7 @@ pub fn push_scope(ctx: &mut Context) {
         vals: HashMap::new(),
         types: HashMap::new(),
         structs: HashMap::new(),
+        by_ty_name: HashMap::new()
     });
 }
 
@@ -243,9 +383,24 @@ pub fn pop_scope(ctx: &mut Context) {
     ctx.scopes.pop();
 }
 
+macro_rules! with_scope {
+    ($ctx: ident, $expr:expr) => ({
+        push_scope($ctx);
+        let result = $expr;
+        pop_scope($ctx);
+        result
+    })
+}
+
 #[allow(dead_code)]
 pub fn add_var<'a>(ctx: &mut Context, name: StringWrapper, ty: Type) {
-    ctx.scopes.last_mut().map(|l| l.vals.insert(name, ty));
+    ctx.scopes.last_mut().map(|l| {
+        let rc_ty = Rc::new(ty);
+        l.by_ty_name.entry(rc_ty.name.clone())
+            .or_insert(Default::default())
+            .vals.insert(name.clone(), rc_ty.clone());
+        l.vals.insert(name, rc_ty);
+    });
 }
 
 #[allow(dead_code)]
@@ -255,7 +410,13 @@ pub fn add_type<'a>(ctx: &mut Context, name: StringWrapper, ty: Kind) {
 
 #[allow(dead_code)]
 pub fn add_struct(ctx: &mut Context, name: StringWrapper, struc: Struct) {
-    ctx.scopes.last_mut().map(|l| l.structs.insert(name, struc));
+    ctx.scopes.last_mut().map(|l| {
+        let rc_struc = Rc::new(struc);
+        l.by_ty_name.entry(rc_struc.ty.name.clone())
+            .or_insert(Default::default())
+            .structs.insert(name.clone(), rc_struc.clone());
+        l.structs.insert(name, rc_struc);
+    });
 }
 
 #[allow(dead_code)]
@@ -289,7 +450,14 @@ pub fn pick_var_that<'a, 'b, F>(
 ) -> context_arbitrary::Result<(&'b StringWrapper, &'b Type)>
 where F: Fn(&StringWrapper, &Type) -> bool {
     let scope = u.choose(&ctx.scopes)?;
-    let vars: Vec<(&StringWrapper, &Type)> = scope.vals.iter().filter(|(n,t)| pred(n,t)).collect();
+    let vars: Vec<(&StringWrapper, &Type)> = scope.vals.iter().filter_map(|(n,t_rc)| {
+        let t: &Type = t_rc.as_ref();
+        if pred(n,t) {
+            Some((n,t))
+        } else {
+            None
+        }
+    }).collect();
     if vars.is_empty() {
         Err(GenerationError::AppropriateTypeFailure)
     } else {
@@ -352,7 +520,7 @@ pub fn construct_value<'a>(
         panic!("Construct value called with a generic");
     }
 
-    // println!("construct_value called on type {:?}", ty);
+    // println!("construct_value called on type {:?}\n", ty);
 
     fn fields_to_struct(ctx: &Context, u: &mut Unstructured, name: StringWrapper, params: Vec<Type>, fields: HashMap<StringWrapper, Type>) -> context_arbitrary::Result<Expr> {
         // println!("fields_to_struct called with: {:?}", fields);
@@ -363,12 +531,12 @@ pub fn construct_value<'a>(
         Ok(Expr::Struct(name, params, fields_expr))
     }
 
-    fn handle_field_generics(generics: Vec<(StringWrapper, Type)>, fields: &HashMap<StringWrapper, Field>) -> HashMap<StringWrapper, Type> {
+    fn handle_field_generics(generics: Vec<(&StringWrapper, Type)>, fields: &HashMap<StringWrapper, Field>) -> HashMap<StringWrapper, Type> {
         // println!("handle_field_generics called on {:?}, {:?}", generics, fields);
         let mut new_map = HashMap::new();
         'outer: for (name, field) in fields.iter() {
-            for (ty_name, ty) in &generics {
-                if ty_name == &field.ty.name {
+            for (ty_name, ty) in generics.iter() {
+                if ty_name == &&field.ty.name {
                     new_map.insert(name.to_owned(), ty.clone() );
                     break 'outer;
                 }
@@ -378,13 +546,13 @@ pub fn construct_value<'a>(
         return new_map;           
     }
 
-    fn handle_arg_generics(generics: Vec<(StringWrapper, Type)>, args: &Vec<Type>) -> Vec<Type> {
+    fn handle_arg_generics(generics: Vec<(&StringWrapper, Type)>, args: &Vec<Type>) -> Vec<Type> {
         // println!("handle_arg_generics called on {:?}, {:?}\n", generics, args);
         let mut new_args = vec![];
         'vec_args: for arg in args {
-            for (ty_name, ty) in &generics {
-                if ty_name == &arg.name {
-                    new_args.push(ty.clone());
+            for (ty_name, ty) in generics.iter() {
+                if arg.contains(&ty_name) {
+                    new_args.push(ty.replace(&ty_name, &ty));
                     continue 'vec_args;
                 }
             }
@@ -393,43 +561,13 @@ pub fn construct_value<'a>(
         return new_args;
     }
 
-    fn make_generics(u: &mut Unstructured, ty1: &Type, ty2: &Type) -> arbitrary::Result<Vec<Type>> {
-        let mut result = vec![];
-        let mut generics_required = false;
-
-        for (i, name) in ty2.type_generics.iter().enumerate() {
-            if let Some(arg) = ty2.type_args.get(i) {
-                generics_required = true;
-                result.push(arg.clone());
-            } else {
-                result.push(ty1.type_args.get(i).map_or_else(
-                    || Type {
-                        name: name.clone(), 
-                        mutability: Mutability::Immutable,
-                        type_generics: vec![],
-                        lt_generics: vec![],
-                        type_args: vec![],
-                        lt_args: vec![],
-                        func: None
-                    }, 
-                    |ty| ty.clone()
-                ).clone());
-            }
-        }
-    
-        Ok(if !generics_required && Arbitrary::arbitrary(u)? {
-            vec![]
-        } else {
-            result
-        })
-
-    }
 
     fn make_fn_generics(
         ctx: &Context, u: &mut Unstructured,
         allow_ambiguity: bool,
-        ty1: &Type, 
-        type_generics: &Vec<StringWrapper>, type_args: &Vec<Type>, func: &Func
+        ty1: &Type, ty2: &Type, 
+        args: &Vec<Type>,
+        type_generics: &Vec<StringWrapper>, type_args: &Vec<Type>,
     ) -> arbitrary::Result<(Option<Vec<usize>>, Vec<Type>)> {
     //! The output type is perhaps a bit counter-intuitive,
     //! (None, tys) means that the function *should* be given
@@ -444,28 +582,29 @@ pub fn construct_value<'a>(
         let mut args_determined_by_generics = vec![];
         let mut generics_required = false;
 
+        let mut output_diff =
+            ty2.diff(ty1)
+                .collect::<HashMap<&StringWrapper, &Type>>();
+
+        // println!("make_generics called with: {:?} {:?} {:?} {:?} {:?}\n",
+            // ty1, ty2, args, type_generics, type_args);
+        // println!("diff is {:?}\n", output_diff);
+
         for (i, gen) in type_generics.iter().enumerate() {
-            if func.ret_type.contains(gen) {
+            if ty2.contains(gen) {
                 result.push(
                     type_args.get(i)
-                        .or(ty1.type_args.get(i))
-                        .or_else(|| func.ret_type.diff(ty1))
+                        .or_else(|| output_diff.remove(&gen))
                         .map_or_else(
-                            || Type {
-                                name: gen.clone(),
-                                mutability: Mutability::Immutable,
-                                type_args: vec![],
-                                type_generics: vec![],
-                                lt_generics: vec![],
-                                lt_args: vec![],
-                                func: None
-                            },
-                            |ty| { generics_required |= !allow_ambiguity;
-                                   ty.clone() }
+                            || name_to_type(gen.clone()),
+                            |ty| {
+                                generics_required |= !allow_ambiguity;
+                                ty.clone()
+                            }
                                     
                         )
                 );
-            } else if func.args.iter().any(|arg| arg.contains(gen)) {
+            } else if args.iter().any(|arg| arg.contains(gen)) {
                 result.push(if let Some(arg) = type_args.get(i) {
                     arg.clone()
                 } else {
@@ -490,166 +629,279 @@ pub fn construct_value<'a>(
 
     }
 
-    let mut possible_exprs: Vec<Box<dyn Fn(&Context, &mut Unstructured) -> context_arbitrary::Result<Expr>>> = vec![];
+    pub fn make_struct_generics(
+        u: &mut Unstructured,
+        allow_ambiguity: bool,
+        ty: &Type, 
+        fields: Vec<&Type>,
+    ) -> arbitrary::Result<Option<Vec<usize>>> {
+    //! Similar to make_fn_generics, but much less complicated because the output type
+    //! always has the same generics as the struct unlike functions
+    
+        let mut determined_args = vec![];
+
+        if allow_ambiguity {
+            return Ok(Some(vec![]));
+        }
+
+        'outer: for gen in ty.type_generics.iter() {
+            for (i, field) in fields.iter().enumerate() {
+                if field.contains(&gen) {
+                    determined_args.push(i);
+                    continue 'outer;
+                }
+            }
+            return Ok(None);
+        }
+
+        if Arbitrary::arbitrary(u)? {
+            return Ok(None);
+        } else {
+            return Ok(Some(determined_args));
+        }
+        
+    }
+
+    enum PossibleExpression<'a> {
+        Struct(&'a StringWrapper, &'a Struct),
+        Var(&'a StringWrapper),
+        Fn(&'a StringWrapper, &'a Type, &'a Func),
+        Method(&'a Method, &'a Type),
+        Macro(&'a StringWrapper, &'a Macro)
+    }
+    let mut possible_exprs: Vec<PossibleExpression> = vec![];
 
     for scope in ctx.scopes.iter() {
-        for (name, struc) in scope.structs.iter() {
-            if struc.ty.matches(&ty) {
-                // TODO: do we really need to clone this twice?
-                let type_generics = struc.ty.type_generics.clone();
-                let type_args = ty.type_args.clone();
-                let ty_clone = ty.clone();
-                possible_exprs.push(Box::new(move |ctx, u| {
-                    let generics =
-                        type_generics.clone().into_iter()
-                          .zip(type_args.clone())
-                          .collect();
-                    let generic_params = make_generics(u, &ty_clone.clone(), &struc.ty)?;
-                    if name.as_str().starts_with("#Tuple") {
-                        // println!("Tuple {:?}", struc);
-                    }
-                    match &struc.fields {
-                        Fields::Named(fields) if !fields.is_empty() => {
-                            fields_to_struct(ctx, u, name.clone(), generic_params, handle_field_generics(generics, &fields))
-                        }
-                        Fields::Unnamed(fields) if !fields.is_empty() => {
-                            let args = fields.into_iter().map(|f| f.ty.to_owned()).collect();
-                            Ok(Expr::Fn(
-                                name.clone(),
-                                generic_params,
-                                handle_arg_generics(generics, &args)
-                                    .into_iter()
-                                    .map(|t| construct_value(ctx, u, t, true))
-                                    .collect::<context_arbitrary::Result<Vec<Expr>>>()?
-                            ))
-                        }
-                        _ => Ok(Expr::Lit(name.clone(), generic_params))
-                    }
-                }));
-            }
-        }
-        for (name, var_ty) in scope.vals.iter() {
-            if var_ty.matches(&ty) {
-                possible_exprs.push(Box::new(move |_,_| Ok(Expr::Var(name.clone()))));
-            } else if let Some(func) = &var_ty.func {
-                let ty_clone = ty.clone();
-                if func.ret_type.matches_with_generics(&ty, &var_ty.type_generics)  {
-                    let type_generics = var_ty.type_generics.clone();
-                    let type_args = var_ty.type_args.clone();
-                    possible_exprs.push(Box::new(move |ctx, u| {
-                        let mut args = vec![];
-                        let (determined_args, generic_params) = make_fn_generics(
-                            ctx, u, 
-                            allow_ambiguity,
-                            &ty_clone.clone(),
-                            &type_generics,
-                            &type_args.clone(),
-                            func
-                        )?;
-                        let generics = type_generics.clone().into_iter().zip(generic_params.clone()).collect();
-                        // println!("generics {:?} {:?}", type_generics, generic_params);
-                        for (i, arg) in handle_arg_generics(generics, &func.args).into_iter().enumerate() {
-                            let arg_ambigous = determined_args.as_ref().map_or(false,
-                                |determined| !determined.contains(&i)
-                            );
-                            args.push(construct_value(ctx, u, arg, arg_ambigous)?);
-                        }
-                        let given_ty_args = if determined_args.is_none() {
-                            generic_params
-                        } else {
-                            vec![]
-                        };
-                        Ok(Expr::Fn(name.clone(), given_ty_args, args))
-                    }));
-                }
-            }
-        }
-        for (assoc_ty, methods) in scope.methods.iter() {
-            for method in methods {
-                let mut ret_gen = Vec::new();
-                ret_gen.extend(assoc_ty.type_generics.clone()); 
-                ret_gen.extend(method.type_generics.clone());
-                if method.func.ret_type.matches_with_generics(&ty, &ret_gen) {
-                    let ty_clone = ty.clone();
-                    let type_generics = assoc_ty.type_generics.clone();
-                    possible_exprs.push(Box::new(move |ctx, u| {
-                        let (_, disc_ty_args) = make_fn_generics(
-                            ctx, u, 
-                            allow_ambiguity,
-                            &ty_clone.clone(),
-                            &type_generics.clone(),
-                            &assoc_ty.type_args.clone(),
-                            &method.func
-                        )?;
-                        let (determined_args, method_ty_args) = make_fn_generics(
-                            ctx, u, 
-                            allow_ambiguity,
-                            &ty_clone.clone(),
-                            &method.type_generics.clone(),
-                            &method.type_args.clone(),
-                            &method.func
-                        )?;
 
-                        let generics = 
-                            assoc_ty.type_generics.clone().into_iter()
-                                .chain(method.type_generics.clone().into_iter())
-                                .zip(disc_ty_args.clone().into_iter()
-                                    .chain(method_ty_args.clone().into_iter()))
-                                .collect();
-                        let mut args = vec![];
-                        for (i, arg) in handle_arg_generics(generics, &method.func.args).into_iter().enumerate() {
-                            let arg_ambigous = determined_args.as_ref().map_or(false,
-                                |determined| !determined.contains(&i)
-                            );
-                            args.push(construct_value(ctx, u, arg, arg_ambigous)?);
-                        }
-                        let given_ty_args = if determined_args.is_none() {
-                            method_ty_args
-                        } else {
-                            vec![]
-                        };
-                        if method.self_param {
-                            Ok(Expr::Method(
-                                Box::new(construct_value(ctx, u, Type {
-                                    type_args: disc_ty_args,
-                                    ..assoc_ty.clone()
-                                }, false)?),
-                                method.name.clone(), 
-                                given_ty_args,
-                                args
-                            ))
-                        } else {
-                            Ok(Expr::AssocFn(
-                                assoc_ty.name.clone(),
-                                disc_ty_args,
-                                method.name.clone(),
-                                given_ty_args,
-                                args   
-                            ))
-                        }
-                    }))
+        let by_ty_name = &scope.by_ty_name;
+
+        let matches_ty_iter = 
+            by_ty_name.get(&ty.name).map(|cached| {
+                (&cached.structs, &cached.vals, &cached.methods, &cached.macros)
+            });
+        let matches_never_iter = 
+            by_ty_name.get(&"!".into()).map(|cached| {
+                (&cached.structs, &cached.vals, &cached.methods, &cached.macros)
+            });
+        type Iterables<'a, A, B, C, D> = (
+            Box<dyn Iterator<Item=A> + 'a>,
+            Box<dyn Iterator<Item=B> + 'a>,
+            Box<dyn Iterator<Item=C> + 'a>,
+            Box<dyn Iterator<Item=D> + 'a>
+        );
+        let (structs, vals, methods, macros): Iterables<_,_,_,_> =
+            match (matches_ty_iter, matches_never_iter) {
+                (None, None) => (
+                    Box::new(iter::empty()),
+                    Box::new(iter::empty()),
+                    Box::new(iter::empty()),
+                    Box::new(iter::empty())
+                ),
+                (None, Some((a,b,c,d))) => (
+                    Box::new(a.iter()),
+                    Box::new(b.iter()),
+                    Box::new(c.iter()),
+                    Box::new(d.iter()),
+                ),
+                (Some((a,b,c,d)), None) => (
+                    Box::new(a.iter()),
+                    Box::new(b.iter()),
+                    Box::new(c.iter()),
+                    Box::new(d.iter()),
+                ),
+                (Some((a1,b1,c1,d1)), Some((a2,b2,c2,d2))) => (
+                    Box::new(a1.iter().chain(a2.iter())),
+                    Box::new(b1.iter().chain(b2.iter())),
+                    Box::new(c1.iter().chain(c2.iter())),
+                    Box::new(d1.iter().chain(d2.iter())),
+                ),
+            };
+
+
+        for (name, struc) in structs {
+            if struc.ty.matches(&ty) {
+                possible_exprs.push(PossibleExpression::Struct(name, struc));
+            }
+        }
+        for (name, var_ty) in vals {
+            if var_ty.matches(&ty) {
+                possible_exprs.push(PossibleExpression::Var(name));
+            } else if let Some(func) = &var_ty.func {
+                if func.ret_type.matches_with_generics(&ty, &var_ty.type_generics)  {
+                    possible_exprs.push(PossibleExpression::Fn(name, var_ty, func));
                 }
+            }
+        }
+        for (assoc_ty, method) in methods {
+            let mut ret_gen = Vec::new();
+            ret_gen.extend(assoc_ty.type_generics.clone()); 
+            ret_gen.extend(method.type_generics.clone());
+            if method.func.ret_type.matches_with_generics(&ty, &ret_gen) {
+                possible_exprs.push(PossibleExpression::Method(method, assoc_ty));
             }
         }
         if allow_ambiguity {
-            for (name, macr) in scope.macros.iter() {
+            for (name, macr) in macros {
                 if macr.ty.matches(&ty) {
-                    // does this really need to be copied twice?
-                    let type_args = ty.type_args.clone();
-                    possible_exprs.push(Box::new(move |ctx, u| {
-                        let body = (macr.constructor)(type_args.clone(), ctx, u)?;
-                        Ok(Expr::Macro(name.to_owned(), body))
-                    }));
+                    possible_exprs.push(PossibleExpression::Macro(name, macr));
                 }
             }
         }
     }
 
     if possible_exprs.is_empty() {
-        println!("Couldn't find any values for type {:?}", ty);
+        return Ok(report_unconstructable_variable(ty.clone()));
     }
-    let choice = choose_consume(u, possible_exprs.iter())?;
-    return choice(ctx, u);
+    let choice = choose_consume(u, possible_exprs.into_iter())?;
+    match choice {
+        PossibleExpression::Struct(name, struc) => {
+            let determined_fields = make_struct_generics(
+                u, 
+                allow_ambiguity,
+                &struc.ty,
+                struc.fields.iter().map(|f| &f.ty).collect(),
+            )?;
+            let generics =
+                struc.ty.type_generics.iter()
+                  .zip(ty.type_args.clone()).collect();
+            match &struc.fields {
+                Fields::Named(fields) => {
+                    let mut args = vec![];
+                    for (i, (name, arg)) in handle_field_generics(generics, &fields).into_iter().enumerate() {
+
+                        let arg_ambigous = determined_fields.as_ref().map_or(true,
+                            |determined| !determined.contains(&i)
+                        );
+                        args.push((name, construct_value(ctx, u, arg, arg_ambigous)?));
+                    }
+                    Ok(Expr::Struct(
+                        name.clone(),
+                        if determined_fields.is_none() {
+                            ty.type_args.clone()
+                        } else {
+                            vec![]
+                        },
+                        args.into_iter().collect()
+                    ))
+                }
+                Fields::Unnamed(fields) => {
+                    let mut args = vec![];
+                    let field_types = fields.into_iter().map(|f| f.ty.clone()).collect();
+                    for (i, arg) in handle_arg_generics(generics, &field_types).into_iter().enumerate() {
+
+                        // Tuples can't have their generics specified so they
+                        // always have the same ambiguity on their arguments
+                        // as the tuple as a whole
+                        let arg_ambigous = if name.as_str().starts_with("#Tuple") {
+                            allow_ambiguity
+                        } else {
+                            determined_fields.as_ref().map_or(true,
+                                |determined| !determined.contains(&i)
+                            )
+                        };
+                        args.push(construct_value(ctx, u, arg, arg_ambigous)?);
+                    }
+                    Ok(Expr::Fn(
+                        name.clone(),
+                        if determined_fields.is_none() {
+                            ty.type_args.clone()
+                        } else {
+                            vec![]
+                        },
+                        args
+                    ))
+                }
+                Fields::None => Ok(Expr::Lit(name.clone(), ty.type_args.clone()))
+            }
+        }
+        PossibleExpression::Var(name) => Ok(Expr::Var(name.to_owned())),
+        PossibleExpression::Fn(name, fn_ty, func) => {
+            let mut args = vec![];
+            let (determined_args, generic_params) = make_fn_generics(
+                ctx, u, 
+                allow_ambiguity,
+                &ty, &func.ret_type,
+                &func.args,
+                &fn_ty.type_generics,
+                &fn_ty.type_args
+            )?;
+            let generics = fn_ty.type_generics.iter().zip(generic_params.clone()).collect();
+            // println!("generics {:?} {:?}", type_generics, generic_params);
+            for (i, arg) in handle_arg_generics(generics, &func.args).into_iter().enumerate() {
+                let arg_ambigous = determined_args.as_ref().map_or(true,
+                    |determined| !determined.contains(&i)
+                );
+                args.push(construct_value(ctx, u, arg, arg_ambigous)?);
+            }
+            let given_ty_args = if determined_args.is_none() {
+                generic_params
+            } else {
+                vec![]
+            };
+            Ok(Expr::Fn(name.clone(), given_ty_args, args))
+        }
+        PossibleExpression::Method(method, assoc_ty) => {
+            let (_, disc_ty_args) = make_fn_generics(
+                ctx, u, 
+                allow_ambiguity,
+                &ty, &method.func.ret_type,
+                &method.func.args,
+                &assoc_ty.type_generics,
+                &assoc_ty.type_args
+            )?;
+            let (determined_args, method_ty_args) = make_fn_generics(
+                ctx, u, 
+                allow_ambiguity,
+                &ty, &method.func.ret_type,
+                &method.func.args,
+                &method.type_generics,
+                &method.type_args,
+            )?;
+
+            let generics = 
+                assoc_ty.type_generics.iter()
+                    .chain(method.type_generics.iter())
+                    .zip(disc_ty_args.clone().into_iter()
+                        .chain(method_ty_args.clone().into_iter()))
+                    .collect();
+            let mut args = vec![];
+            for (i, arg) in handle_arg_generics(generics, &method.func.args).into_iter().enumerate() {
+                let arg_ambigous = determined_args.as_ref().map_or(true,
+                    |determined| !determined.contains(&i)
+                );
+                args.push(construct_value(ctx, u, arg, arg_ambigous)?);
+            }
+            let given_ty_args = if determined_args.is_none() {
+                method_ty_args
+            } else {
+                vec![]
+            };
+            if method.self_param {
+                Ok(Expr::Method(
+                    Box::new(construct_value(ctx, u, Type {
+                        type_args: disc_ty_args,
+                        ..assoc_ty.clone()
+                    }, false)?),
+                    method.name.clone(), 
+                    given_ty_args,
+                    args
+                ))
+            } else {
+                Ok(Expr::AssocFn(
+                    assoc_ty.name.clone(),
+                    disc_ty_args,
+                    method.name.clone(),
+                    given_ty_args,
+                    args   
+                ))
+            }
+        }
+
+        PossibleExpression::Macro(name, macr) => {
+            let body = (macr.constructor)(ty.type_args, ctx, u)?;
+            Ok(Expr::Macro(name.clone(), body))
+        }
+    }
 }
 
 pub fn kind_to_type<S: Into<StringWrapper>>(name: S, mutability: Mutability, kind: &Kind) -> Type {
@@ -816,12 +1068,12 @@ macro_rules! make_methods {
     ($name:path$([$($type_args:tt)*])? {$($methods:tt)*}) => 
         (make_methods!(#($name$([$($type_args)*])?){$($methods)*}));
     (#($($ty:tt)*){$($methods:tt)*}) => (
-        (make_type!($($ty)*), parse_methods!(;$($methods)*,))
+        (Rc::new(make_type!($($ty)*)), parse_methods!(;$($methods)*,))
     );
 }
 
 macro_rules! parse_methods {
-    ($(,$expr:expr)*;$(,)?) => (vec![$($expr),*]);
+    ($(,$expr:expr)*;$(,)?) => (vec![$(Rc::new($expr)),*]);
     ($(,$expr:expr)*;
         $name:ident$({$($gen:tt)*})?($($args:tt)*) 
             -> $ret:path$([$($ret_arg:tt)*])?, $($rest:tt)*) => {
@@ -871,7 +1123,7 @@ macro_rules! parse_types {
 macro_rules! make_struct {
     (()) => (("#Unit".into(), crate::semantics::Struct {
         ty: make_type!(()),
-        fields: Fields::Unnamed(vec![])
+        fields: Fields::None
     }));
     (($len:expr;)) => ({
         let len = $len;
@@ -891,8 +1143,13 @@ macro_rules! make_struct {
             }).collect())
         })
     });
-    ($(:$ty:path:)? $name:path$([$($gen:tt)*])? ) =>
-        (make_struct!($(:$ty:)? $name$([$($gen)*])? {}));
+    ($name:path$([$($gen:tt)*])? ) =>
+        (make_struct!(:$name: $name$([$($gen)*])?));
+    (:$ty:path: $name:path$([$($gen:tt)*])? ) =>
+        ((stringify!($name).into(), crate::semantics::Struct {
+            ty: make_type!($ty$({$($gen)*})?),
+            fields: Fields::None
+        }));
     ($name:ident$([$($gen:tt)*])? ( $($fields:tt)* )) =>
         (make_struct!(:$name:$name$([$($gen)*])? ( $($fields)* )));
     ($name:path$([$($gen:tt)*])? { $($fields:tt)* }) =>
@@ -929,6 +1186,7 @@ macro_rules! parse_unnamed_fields {
     };
 }
 
+#[allow(unused_macros)]
 macro_rules! parse_named_fields {
     ($(,$fields:expr)*;) => (Fields::Named([$($fields),*].iter().cloned().collect()));
     ($(,$fields:expr)*;$(pub)? $name:ident : $ty:ident$({$($gen:tt)*})?$([$($arg:tt)*])?, $($rest:tt)*) => 
@@ -952,20 +1210,30 @@ macro_rules! make_macro {
     ($ty:path$({$($gen:tt)*})?$([$($arg:tt)*])? : $name:ident($fn:expr)) => 
         (#($ty{$($gen)*}[$($arg)*]) : $name($fn));
     (#($($ty:tt)*) : $name:ident($fn:expr)) => {
-        (stringify!($name).into(), Macro {
+        (StringWrapper::from(stringify!($name)), Macro {
             constructor: $fn,
             ty: make_type!($($ty)*)
         })
     }
 }
 
+fn report_unconstructable_variable(ty: Type) -> Expr {
+    println!("Couldn't find value of type {}", ty);
+    Expr::Macro("compile_error".into(), MacroBody {
+        brackets: BracketType::Round,
+        seperator: Seperator::Comma,
+        tokens: vec![Token::Expr(Expr::ExactString(format!("Couldn't find value of type {}", ty)))]
+    })
+}
+
 
 pub fn prelude_scope() -> Scope {
-    Scope {
+    let mut scope = Scope {
+        by_ty_name: HashMap::new(),
         owned: false,
-        vals: [
+        vals: vec![
             make_val!(drop: %Fn{T}(T)),
-        ].iter().cloned().collect(), 
+        ].into_iter().map(|(k,v)| (StringWrapper::clone(&k), Rc::new(v))).collect(), 
         methods: vec![
             make_methods!(#(Box{T}) {
                 new(T) -> Box[T]
@@ -1013,7 +1281,7 @@ pub fn prelude_scope() -> Scope {
                     seperator: Seperator::Comma
                 })
             }))
-        ].iter().cloned().collect(),
+        ].iter().cloned().map(|(k,v)| (k, Rc::new(v))).collect(), 
         types: [
             // make_kind!(Send),
             // make_kind!(Sized),
@@ -1050,12 +1318,15 @@ pub fn prelude_scope() -> Scope {
             make_struct!(:Maybe:Some[T](T)),
             make_struct!(:Result:Ok[R,E](R)),
             make_struct!(:Result:Err[R,E](E)),
-        ].iter().cloned().collect()
-    }
+        ].iter().cloned().map(|(k,v)| (k, Rc::new(v))).collect(), 
+    };
+    scope.make_ty_index();
+    scope
 }
 
 pub fn primitive_scope() -> Scope {
-    Scope {
+    let mut scope = Scope {
+        by_ty_name: HashMap::new(),
         owned: false,
         vals: HashMap::new(),
         macros: HashMap::new(),
@@ -1092,7 +1363,7 @@ pub fn primitive_scope() -> Scope {
             make_struct!((11;)),
             make_struct!((12;))
 
-        ].iter().cloned().collect(),
+        ].iter().cloned().map(|(k,v)| (k, Rc::new(v))).collect(), 
         types: [
             make_kind!(bool),
             make_kind!(u8),
@@ -1123,7 +1394,9 @@ pub fn primitive_scope() -> Scope {
             // make_kind!((12;))
             ("!".into(), Kind { lifetimes: 0, types: 0 })
         ].iter().cloned().collect(),
-    }
+    };
+    scope.make_ty_index();
+    scope
 }
 
 
@@ -1154,5 +1427,20 @@ mod tests {
     #[test]
     fn struct_type_generics() {
         assert!(make_struct!(:Result:Ok[R,E](R)).1.ty.type_generics.len() == 2)
+    }
+    #[test]
+    fn type_diff() {
+        assert!(make_type!(A).diff(&make_type!(B)).next().unwrap().1.matches(&make_type!(B)));
+        assert!(make_type!(Vec[A]).diff(&make_type!(Vec[B])).next().unwrap().1.matches(&make_type!(B)));
+        assert!(make_type!(Vec{A}).diff(&make_type!(Vec{A}[B])).next().unwrap().1.matches(&make_type!(B)));
+        let many_diffs_lhs = make_type!(Result[Vec[Result[A,B]],Box[C]]);
+        let many_diffs_rhs = make_type!(Result[Vec[Result[D,E]],Box[F]]);
+        let many_diffs = many_diffs_lhs.diff(&many_diffs_rhs).collect::<Vec<_>>();
+        let expected = [("A".into(), make_type!(D)), ("B".into(), make_type!(E)), ("C", make_type!(F))];
+        assert!(many_diffs.len() == 3);
+        for (i, diff) in many_diffs.into_iter().enumerate() {
+            assert!(diff.0 == &expected[i].0);
+            assert!(diff.1.matches(&expected[i].1));
+        }
     }
 }
