@@ -52,8 +52,8 @@ pub struct Context {
     /// (Semantics only): can the type of the current expression be infered from context or does it have to be unamigious?
     /// In a pattern, allow_ambiguity means that the pattern needs a type anotation
     pub allow_ambiguity: bool,
-    /// To avoid patterns like `foo: bool: bool`
-    pub is_ty_pattern: bool,
+    /// Type patterns are only allowed to exist at the top level
+    pub is_top_pattern: bool,
 }
 impl Context {
     pub fn make_context(regard_semantics: bool) -> Context {
@@ -67,7 +67,8 @@ impl Context {
                     types: HashMap::new(),
                     structs: HashMap::new(),
                     macros: HashMap::new(),
-                    methods: vec![]
+                    methods: vec![],
+                    by_ty_name: HashMap::new(),
                 }
             ],
             regard_semantics,
@@ -89,7 +90,7 @@ impl Context {
             no_generics: false,
             is_enum_variant: false,
             allow_ambiguity: false,
-            is_ty_pattern: false
+            is_top_pattern: false
         }
     }
 }
@@ -193,11 +194,6 @@ macro_rules! ty_unambigous {
 }
 
 #[macro_export]
-macro_rules! is_typed {
-($ctx: ident, $e: expr) => (with_attrs!($ctx{is_ty_pattern = true, allow_ambiguity = false}, $e))
-}
-
-#[macro_export]
-macro_rules! isnt_typed {
-($ctx: ident, $e: expr) => (with_attrs!($ctx {is_ty_pattern = false }, $e))
+macro_rules! sub_pattern {
+($ctx: ident, $e: expr) => (with_attrs!($ctx{ is_top_pattern = false }, $e))
 }

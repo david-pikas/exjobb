@@ -46,7 +46,7 @@ where I: ExactSizeIterator<Item = T> {
 }
 
 pub struct ContextArbitraryIter<'a, 'b, 'c, 'd, El, Ctx> {
-    gen: Box<dyn Fn(&mut Ctx, &mut Unstructured<'a>) -> Result<El> + 'd>,
+    gen: Box<dyn FnMut(&mut Ctx, &mut Unstructured<'a>) -> Result<El> + 'd>,
     u: &'b mut Unstructured<'a>,
     ctx: &'c mut Ctx,
     max_len: usize,
@@ -69,7 +69,7 @@ impl<'a, 'b, 'c, 'd, El, Ctx> Iterator for ContextArbitraryIter<'a, 'b, 'c, 'd, 
 }
 
 pub struct ContextArbitraryIterNonMut<'a, 'b, 'c, 'd, El, Ctx> {
-    gen: Box<dyn Fn(&Ctx, &mut Unstructured<'a>) -> Result<El> + 'd>,
+    gen: Box<dyn FnMut(&Ctx, &mut Unstructured<'a>) -> Result<El> + 'd>,
     u: &'b mut Unstructured<'a>,
     ctx: &'c Ctx,
     max_len: usize,
@@ -107,7 +107,7 @@ pub fn c_arbitrary_iter_with<'a, 'b, 'c, 'd, El, Ctx, F: 'd>(
     gen: F
 ) -> ContextArbitraryIter<'a, 'b, 'c, 'd, El, Ctx>
 where
-    F: Fn(&mut Ctx, &mut Unstructured<'a>) -> Result<El>
+    F: FnMut(&mut Ctx, &mut Unstructured<'a>) -> Result<El>
 {
     let max_len = u.int_in_range(0..=5).unwrap();
     ContextArbitraryIter {
@@ -126,7 +126,7 @@ pub fn c_arbitrary_iter_with_non_mut<'a, 'b, 'c, 'd, El, Ctx, F: 'd>(
     gen: F
 ) -> ContextArbitraryIterNonMut<'a, 'b, 'c, 'd, El, Ctx>
 where
-    F: Fn(&Ctx, &mut Unstructured<'a>) -> Result<El>
+    F: FnMut(&Ctx, &mut Unstructured<'a>) -> Result<El>
 {
     let max_len = u.int_in_range(0..=5).unwrap();
     ContextArbitraryIterNonMut {

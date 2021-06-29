@@ -1,3 +1,5 @@
+#![feature(once_cell)]
+
 #[macro_use]
 mod parser_wrapper;
 pub use parser_wrapper::parse;

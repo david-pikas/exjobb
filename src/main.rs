@@ -1,3 +1,5 @@
+#![feature(once_cell)]
+
 use arbitrary::Unstructured;
 use quote::quote;
 use rand::{distributions, prelude::Distribution, thread_rng, Rng};
