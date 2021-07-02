@@ -1,13 +1,15 @@
 use std::collections::HashMap;
 
-use crate::semantics;
+use crate::{make_type, semantics};
 
-use super::semantics::{Stack, Scope, prelude_scope, primitive_scope};
+use super::semantics::{Stack, Scope, Operator, prelude_scope, primitive_scope};
 
 
 pub struct Context {
     /// A stack of variable scopes
     pub scopes: Stack<Scope>,
+    /// Since operators are globaly defined, they live here seperate from the scopes
+    pub operators: HashMap<&'static str, Operator>,
     /// if false, generate syntactically valid code that may be semantically incorrect
     pub regard_semantics: bool,
     /// To prevent airbitrarly nested expressions
@@ -65,12 +67,20 @@ impl Context {
                     owned: true,
                     vals: HashMap::new(),
                     types: HashMap::new(),
+                    traits: HashMap::new(),
                     structs: HashMap::new(),
                     macros: HashMap::new(),
                     methods: vec![],
                     by_ty_name: HashMap::new(),
                 }
             ],
+            operators: [
+                ("&", Operator {
+                    type_generics: vec![("T".into(), vec![])],
+                    operands: (make_type!(T), None),
+                    ret_type: make_type!(& %(#current_scope) #(T))
+                })
+            ].iter().cloned().collect(),
             regard_semantics,
             depth: 0,
             allow_type_annotations: true,
