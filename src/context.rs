@@ -1,8 +1,9 @@
 use std::collections::HashMap;
+use std::cell::Cell;
 
-use crate::{make_type, semantics};
+use crate::semantics;
 
-use super::semantics::{Stack, Scope, Operator, prelude_scope, primitive_scope};
+use super::semantics::{Stack, Scope, Operator, prelude_scope, operators, primitive_scope};
 
 
 pub struct Context {
@@ -56,6 +57,11 @@ pub struct Context {
     pub allow_ambiguity: bool,
     /// Type patterns are only allowed to exist at the top level
     pub is_top_pattern: bool,
+    /// (Semantics only): the size of the current expression being made.
+    /// It is set by the children of a recursive call back to their parent
+    /// so that if one sibling is very large, other siblings have to be smaller 
+    /// etc.
+    pub size: Cell<usize>
 }
 impl Context {
     pub fn make_context(regard_semantics: bool) -> Context {
@@ -74,13 +80,7 @@ impl Context {
                     by_ty_name: HashMap::new(),
                 }
             ],
-            operators: [
-                ("&", Operator {
-                    type_generics: vec![("T".into(), vec![])],
-                    operands: (make_type!(T), None),
-                    ret_type: make_type!(& %(#current_scope) #(T))
-                })
-            ].iter().cloned().collect(),
+            operators: operators(),
             regard_semantics,
             depth: 0,
             allow_type_annotations: true,
@@ -100,7 +100,8 @@ impl Context {
             no_generics: false,
             is_enum_variant: false,
             allow_ambiguity: false,
-            is_top_pattern: false
+            is_top_pattern: false,
+            size: Cell::new(0)
         }
     }
 }
