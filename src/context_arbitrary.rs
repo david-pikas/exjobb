@@ -109,7 +109,7 @@ pub fn c_arbitrary_iter_with<'a, 'b, 'c, 'd, El, Ctx, F: 'd>(
 where
     F: FnMut(&mut Ctx, &mut Unstructured<'a>) -> Result<El>
 {
-    let max_len = u.int_in_range(0..=5).unwrap();
+    let max_len = u.int_in_range(0..=5).unwrap_or(1);
     ContextArbitraryIter {
         u,
         ctx,

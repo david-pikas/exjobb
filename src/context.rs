@@ -1,14 +1,26 @@
 use std::collections::HashMap;
-use std::cell::Cell;
+use std::cell::{RefCell, Cell};
+use std::rc::Rc;
 
 use crate::semantics;
+use crate::semantics::Lifetime;
+use crate::semantics::StringWrapper;
 
 use super::semantics::{Stack, Scope, Operator, prelude_scope, operators, primitive_scope};
 
 
+pub struct Options {
+    pub use_semantics: bool,
+    pub use_panics: bool,
+    pub print_vars: bool,
+}
 pub struct Context {
+    /// Options passed from the command line
+    pub options: Options,
     /// A stack of variable scopes
     pub scopes: Stack<Scope>,
+    /// Used for functions since they don't inherent their parents scope
+    pub basic_scopes: Stack<Scope>,
     /// Since operators are globaly defined, they live here seperate from the scopes
     pub operators: HashMap<&'static str, Operator>,
     /// if false, generate syntactically valid code that may be semantically incorrect
@@ -42,6 +54,8 @@ pub struct Context {
     pub parenthesize_block: bool,
     /// (Semantics only) The expected type of the current expression
     pub expected_type: semantics::Type,
+    /// (Semantics only) the lifetime of the current expression
+    pub lifetime: usize,
     /// (Semantics only) does the file have a main function?
     pub has_main: bool,
     /// (Semantics only) are non ascii identifiers allowed?
@@ -52,36 +66,55 @@ pub struct Context {
     pub no_generics: bool,
     /// (Semantics only): is the curent struct an enum variant? if so, don't specify that the fields are pub
     pub is_enum_variant: bool,
+    /// (Semantics only): does the current block need a new scope, (usually yes) or does it 
+    /// already have a new scope (such as in the case with functions)
+    pub needs_new_scope: bool,
     /// (Semantics only): can the type of the current expression be infered from context or does it have to be unamigious?
     /// In a pattern, allow_ambiguity means that the pattern needs a type anotation
     pub allow_ambiguity: bool,
     /// Type patterns are only allowed to exist at the top level
     pub is_top_pattern: bool,
-    /// (Semantics only): the size of the current expression being made.
-    /// It is set by the children of a recursive call back to their parent
-    /// so that if one sibling is very large, other siblings have to be smaller 
-    /// etc.
-    pub size: Cell<usize>
+    /// (CURRENTLY UNUSED): Does this block belong to a function?
+    pub is_fn_block: bool,
+    /// (Semantics only): is this the final statement of a block? Is used together
+    /// with final_stmnt_only to know when they are allowed to be used. Note that
+    /// a final stmnt can itself contain a block, which must then unset and set 
+    /// this flag
+    pub is_final_stmnt: bool,
+    /// (Semantics only): the size of the current expression being made.  It is
+    /// set by the children of a recursive call back to their parent so that if
+    /// one sibling is very large, other siblings have to be smaller etc.
+    pub size: Cell<usize>,
+    /// (Semantics only): variables that should not be moved. For instance, a
+    /// function that returns a reference needs the var that the reference comes
+    /// from to still be alive at the end of the function so it can be returned
+    pub final_stmnt_only: Vec<StringWrapper>,
 }
 impl Context {
-    pub fn make_context(regard_semantics: bool) -> Context {
+    pub fn make_context(options: Options) -> Context {
+        let basic_scopes: Stack<Scope> = Rc::new([
+            primitive_scope(),
+            prelude_scope(options.use_panics),
+        ].iter().cloned().collect());
         Context {
-            scopes: vec![
-                primitive_scope(),
-                prelude_scope(),
-                Scope {
+            scopes: Rc::new(crate::semantics::RcList::Cons(
+                RefCell::new(Scope {
                     owned: true,
-                    vals: HashMap::new(),
+                    vars: HashMap::new(),
                     types: HashMap::new(),
+                    lifetimes: HashMap::new(),
                     traits: HashMap::new(),
                     structs: HashMap::new(),
                     macros: HashMap::new(),
                     methods: vec![],
                     by_ty_name: HashMap::new(),
-                }
-            ],
+                }),
+                Rc::clone(&basic_scopes)
+            )),
+            basic_scopes,
             operators: operators(),
-            regard_semantics,
+            regard_semantics: options.use_semantics,
+            options,
             depth: 0,
             allow_type_annotations: true,
             has_value: false,
@@ -93,17 +126,32 @@ impl Context {
             allow_range: true,
             allow_block_labels: true,
             parenthesize_block: false,
+            needs_new_scope: true,
             expected_type: crate::make_type!(()),
             has_main: true,
+            lifetime: 0,
             non_ascii: false,
             is_const: false,
             no_generics: false,
             is_enum_variant: false,
             allow_ambiguity: false,
             is_top_pattern: false,
-            size: Cell::new(0)
+            is_fn_block: false,
+            is_final_stmnt: false,
+            size: Cell::new(0),
+            final_stmnt_only: vec![],
         }
     }
+}
+
+pub fn fresh_lt(ctx: &mut Context) -> Lifetime {
+    let result = Lifetime::Anon(ctx.lifetime);
+    ctx.lifetime += 1;
+    return result;
+}
+
+pub fn reserve_var(ctx: &mut Context, name: StringWrapper) {
+    ctx.final_stmnt_only.push(name);
 }
 
 #[macro_export]
@@ -207,4 +255,19 @@ macro_rules! ty_unambigous {
 #[macro_export]
 macro_rules! sub_pattern {
 ($ctx: ident, $e: expr) => (with_attrs!($ctx{ is_top_pattern = false }, $e))
+}
+
+#[macro_export]
+macro_rules! already_scoped {
+($ctx: ident, $e: expr) => (with_attrs!($ctx{ needs_new_scope = false }, $e))
+}
+
+#[macro_export]
+macro_rules! fn_block {
+($ctx: ident, $e: expr) => (with_attrs!($ctx{ is_fn_block = true }, $e))
+}
+
+#[macro_export]
+macro_rules! not_fn_block {
+($ctx: ident, $e: expr) => (with_attrs!($ctx{ is_fn_block = false }, $e))
 }
