@@ -17,7 +17,7 @@ use context_arbitrary::GenerationError;
 
 #[macro_use]
 mod context;
-use context::Context;
+use context::{Options, Context};
 
 #[macro_use]
 mod semantics;
@@ -52,7 +52,7 @@ fn main() -> Result<(), MainError> {
         Repeat::FirstError => 1 > errors,
     } {
         count += 1;
-        let ast = gen_code(flags.use_semantics)?;
+        let ast = gen_code(flags.clone().into())?;
         let ast_string = format!("{:#?}", ast);
         fs::write(ast_filename, &ast_string).expect("Failed writing file");
         let code_str = quote!(#ast).to_string();
@@ -110,11 +110,24 @@ impl From<parser_wrapper::ParserError> for MainError {
     }
 }
 
+#[derive(Clone, PartialEq, Debug)]
 enum Repeat { N(usize), Forever, FirstError }
+#[derive(Clone, PartialEq, Debug)]
 struct Flags {
     repeat: Repeat,
+    exit_imediately: bool,
     use_semantics: bool,
-    exit_imediately: bool
+    use_panics: bool,
+    print_vars: bool,
+}
+impl From<Flags> for Options {
+    fn from(flags: Flags) -> Self {
+        Options {
+            use_semantics: flags.use_semantics,
+            use_panics: flags.use_panics,
+            print_vars: flags.print_vars,
+        }
+    }
 }
 
 fn parse_args(mut args: Args) -> Flags {
@@ -127,7 +140,9 @@ fn parse_args(mut args: Args) -> Flags {
     let mut flags = Flags {
         repeat: Repeat::N(1),
         use_semantics: true,
-        exit_imediately: false
+        exit_imediately: false,
+        use_panics: true,
+        print_vars: false
     };
     let options: Options = vec![
         (Some("-n"), "--num_of_iterations", ArgAction::Unnary(|flags, arg| {
@@ -142,6 +157,12 @@ fn parse_args(mut args: Args) -> Flags {
         (None, "--syntax", ArgAction::Nullary(|flags| {
             flags.use_semantics = false;
         }), "Generate programs that are syntactically but not necessarily semantically valid"),
+        (None, "--no-panic", ArgAction::Nullary(|flags| {
+            flags.use_panics = false
+        }), "Don't generate any panic statements"),
+        (None, "--print-vars", ArgAction::Nullary(|flags| {
+            flags.print_vars = true
+        }), "Print the value of every variable (usefull for comparing e.g. different optimisation levels)"),
         (Some("-h"), "--help", ArgAction::Meta(|flags, options| {
             for (short_form, long_form, act, explanation) in options {
                 let arg = match act {
@@ -158,18 +179,8 @@ fn parse_args(mut args: Args) -> Flags {
             flags.exit_imediately = true;
         }), "Print this help")
     ];
-    while let Some(arg) = args.next() {
-        // if arg == "syntax" { 
-        //     flags.use_semantics = false
-        // } else if arg == "-n" || arg == "--number_of_iterations" {
-        //     let n = args.next().expect("Expected value for argument")
-        //                 .parse().expect("Error while parsing argument");
-        //     flags.repeat = Repeat::N(n);
-        // } else if arg == "-r" || arg == "--repeat" {
-        //     flags.repeat = Repeat::Forever;
-        // } else if arg == "-f" || arg == "--first-error" {
-        //     flags.repeat = Repeat::FirstError;
-        // }
+    let _program_name = args.next();
+    'outer: while let Some(arg) = args.next() {
         for (short_form, long_form, arg_action, _) in &options {
             if &Some(arg.as_str()) == short_form || &arg == long_form {
                 match arg_action {
@@ -177,14 +188,16 @@ fn parse_args(mut args: Args) -> Flags {
                     ArgAction::Unnary(f) => f(&mut flags, args.next().expect("Expected value for argument")),
                     ArgAction::Meta(f) => f(&mut flags, &options),
                 }
+                continue 'outer;
             }
         }
+        panic!("Unknown argument: {}", arg)
         
     }
     return flags;
 }
 
-fn gen_code(use_semantics: bool) -> Result<syn::File, GenerationError> {
+fn gen_code(options: Options) -> Result<syn::File, GenerationError> {
     let WrappedFile(ast): syn_arbitrary::WrappedFile =
         with_stack_space_of(64 * 1024 * 1024, move || {
             let mut rng = thread_rng();
@@ -194,7 +207,7 @@ fn gen_code(use_semantics: bool) -> Result<syn::File, GenerationError> {
                 .take(len)
                 .collect();
             let mut u = Unstructured::new(&data);
-            let mut ctx = Context::make_context(use_semantics);
+            let mut ctx = Context::make_context(options);
             make_wrapped_file(&mut ctx, &mut u)
         })?;
     return Ok(ast);
