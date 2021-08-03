@@ -1,7 +1,7 @@
 use arbitrary::Arbitrary;
 use proc_macro2::TokenStream;
-use std::{collections::{HashMap, HashSet}, iter::{self, empty}, rc::Rc};
-use syn::{Abi, AngleBracketedGenericArguments, Arm, AttrStyle, Attribute, BareFnArg, BinOp, Binding, Block, Constraint, Expr, ExprArray, ExprAssign, ExprAssignOp, ExprAsync, ExprAwait, ExprBinary, ExprBlock, ExprBox, ExprBreak, ExprCall, ExprCast, ExprClosure, ExprContinue, ExprField, ExprForLoop, ExprGroup, ExprIf, ExprIndex, ExprLet, ExprLit, ExprLoop, ExprMacro, ExprMatch, ExprMethodCall, ExprParen, ExprPath, ExprRange, ExprReference, ExprRepeat, ExprReturn, ExprStruct, ExprTry, ExprTryBlock, ExprTuple, ExprType, ExprUnary, ExprWhile, ExprYield, Field, FieldPat, FieldValue, Fields, FieldsNamed, FieldsUnnamed, File, FnArg, GenericArgument, GenericMethodArgument, GenericParam, Generics, Ident, Index, Item, ItemConst, ItemEnum, ItemFn, ItemStatic, ItemStruct, ItemTrait, ItemType, Label, Lifetime, LifetimeDef, Lit, LitStr, Local, MacroDelimiter, Member, MethodTurbofish, Pat, PatBox, PatIdent, PatLit, PatOr, PatPath, PatRange, PatReference, PatRest, PatSlice, PatStruct, PatTuple, PatTupleStruct, PatType, PatWild, PathArguments, PathSegment, RangeLimits, Receiver, ReturnType, Signature, Stmt, Token, TraitBound, TraitBoundModifier, TraitItem, TraitItemConst, TraitItemMethod, TraitItemType, Type, TypeArray, TypeBareFn, TypeGroup, TypeImplTrait, TypeInfer, TypeNever, TypeParam, TypeParamBound, TypeParen, TypePath, TypePtr, TypeReference, TypeSlice, TypeTraitObject, TypeTuple, UnOp, Variadic, Variant, VisPublic, VisRestricted, Visibility, parse_quote, parse_str, punctuated::Punctuated, token::{Brace, Bracket, Group, Paren}};
+use std::{collections::{HashMap, HashSet}, iter, rc::Rc};
+use syn::{Abi, AngleBracketedGenericArguments, Arm, AttrStyle, Attribute, BareFnArg, BinOp, Binding, Block, ConstParam, Constraint, Expr, ExprArray, ExprAssign, ExprAssignOp, ExprAsync, ExprAwait, ExprBinary, ExprBlock, ExprBox, ExprBreak, ExprCall, ExprCast, ExprClosure, ExprContinue, ExprField, ExprForLoop, ExprGroup, ExprIf, ExprIndex, ExprLet, ExprLit, ExprLoop, ExprMacro, ExprMatch, ExprMethodCall, ExprParen, ExprPath, ExprRange, ExprReference, ExprRepeat, ExprReturn, ExprStruct, ExprTry, ExprTryBlock, ExprTuple, ExprType, ExprUnary, ExprWhile, ExprYield, Field, FieldPat, FieldValue, Fields, FieldsNamed, FieldsUnnamed, File, FnArg, GenericArgument, GenericMethodArgument, GenericParam, Generics, Ident, Index, Item, ItemConst, ItemEnum, ItemFn, ItemStatic, ItemStruct, ItemTrait, ItemType, Label, Lifetime, LifetimeDef, Lit, LitStr, Local, MacroDelimiter, Member, MethodTurbofish, Pat, PatBox, PatIdent, PatLit, PatOr, PatPath, PatRange, PatReference, PatRest, PatSlice, PatStruct, PatTuple, PatTupleStruct, PatType, PatWild, PathArguments, PathSegment, RangeLimits, Receiver, ReturnType, Signature, Stmt, Token, TraitBound, TraitBoundModifier, TraitItem, TraitItemConst, TraitItemMethod, TraitItemType, Type, TypeArray, TypeBareFn, TypeGroup, TypeImplTrait, TypeInfer, TypeNever, TypeParam, TypeParamBound, TypeParen, TypePath, TypePtr, TypeReference, TypeSlice, TypeTraitObject, TypeTuple, UnOp, Variadic, Variant, VisPublic, VisRestricted, Visibility, parse_quote, parse_str, punctuated::Punctuated, token::{Brace, Bracket, Group, Paren}};
 use quote::quote;
 use lazy_static::lazy_static;
 use std::mem;
@@ -411,7 +411,7 @@ fn parenthesize_pat(pat: Pat) -> Pat {
 
 impl From<semantics::Type> for syn::Type {
     fn from(ty: semantics::Type) -> Self {
-        if ty.name.as_str().starts_with("#Tuple") {
+        if ty.name.starts_with("#Tuple") {
             syn::Type::Tuple(TypeTuple {
                 paren_token: Paren { span: dummy_span() },
                 elems: ty.type_args.into_iter().map::<syn::Type,_>(From::from).collect()
@@ -449,15 +449,18 @@ impl From<semantics::Type> for syn::Type {
             lit
         } else if ty.name == "!" {
             syn::Type::Never(TypeNever { bang_token: parse_quote!(!) })
-        } else if ty.name.as_str().starts_with("#Ref") {
+        } else if ty.name.starts_with("#Ref") {
             syn::Type::Reference(TypeReference {
                 and_token: parse_quote!(&),
-                lifetime: ty.lt_args.first().and_then(semantics::Lifetime::name).map(|lt| {
-                    syn::Lifetime {
-                        apostrophe: dummy_span(),
-                        ident: name_to_ident_det(lt.as_str())
-                    }
-                }),
+                lifetime: ty.lt_args.first()
+                            .and_then(semantics::Lifetime::name)
+                            .filter(|lt| !ty.lt_generics.contains(lt))
+                            .map(|lt| {
+                                syn::Lifetime {
+                                    apostrophe: dummy_span(),
+                                    ident: name_to_ident_det(lt.as_str())
+                                }
+                            }),
                 mutability: if ty.name == "#RefMut" {
                     parse_quote!(mut)
                 } else {
@@ -465,7 +468,7 @@ impl From<semantics::Type> for syn::Type {
                 },
                 elem: Box::new(ty.type_args[0].clone().into())
             })
-        } else if ty.name.as_str().starts_with("#") {
+        } else if ty.name.starts_with("#") {
             panic!("Unhandled special type: {:?}", ty);
         } else {
             // println!("Type path: {:?}", ty);
@@ -567,12 +570,19 @@ fn from_sem_expr(ctx: &Context, u: &mut Unstructured, ex: &semantics::Expr) -> R
             })
         }
         semantics::Expr::Field(reciever, name) => {
+            let member = name.as_str().parse().map_or_else(
+                |_| Member::Named(name_to_ident_det(name.as_str())),
+                |n| Member::Unnamed(Index {
+                        index: n,
+                        span: dummy_span()
+                    })
+            );
             println!("Field access!");
             syn::Expr::Field(ExprField {
                 attrs: vec![],
                 base: Box::new(parenthesize_expr(16, from_sem_expr(ctx, u, reciever)?)),
                 dot_token: parse_quote!(.),
-                member: Member::Named(name_to_ident_det(name.as_str()))
+                member
             })
         }
         semantics::Expr::Method(reciever, name, type_args, args) => {
@@ -662,7 +672,7 @@ fn from_sem_expr(ctx: &Context, u: &mut Unstructured, ex: &semantics::Expr) -> R
             })
         }
         semantics::Expr::Fn(name, type_args, args) => {
-            if name.as_str().starts_with("#Tuple") {
+            if name.starts_with("#Tuple") {
                 // println!("{:?}", args);
                 Expr::Tuple(ExprTuple {
                     attrs: vec![],
@@ -697,7 +707,7 @@ fn from_sem_expr(ctx: &Context, u: &mut Unstructured, ex: &semantics::Expr) -> R
                 mutability: None,
                 expr: Box::new(parenthesize_expr(13, from_sem_expr(ctx, u, val.as_ref())?))
             }),
-            "& mut" => Expr::Reference(ExprReference {
+            "&mut" => Expr::Reference(ExprReference {
                 attrs: vec![],
                 and_token: parse_quote!(&),
                 raw: Default::default(),
@@ -721,9 +731,189 @@ fn from_sem_expr(ctx: &Context, u: &mut Unstructured, ex: &semantics::Expr) -> R
                 right: Box::new(parenthesize_expr(presc+1, from_sem_expr(ctx, u, rhs.as_ref())?))
             })
         }
+        semantics::Expr::AdditionalArg(_ty, _mt) => parse_quote!(compile_error!("Illegal demand for additional arg"))
     })
 }
-// TODO: add the possibility for things like assignments in the middle of expressions
+
+fn extract_additional_args(ctx: &mut Context, u: &mut Unstructured, e: semantics::Expr)
+    -> Result<(Vec<(Ident, semantics::Mutability, semantics::Type)>, semantics::Expr)> {
+    Ok(match e {
+        semantics::Expr::AdditionalArg(ty, mt) => {
+            let ident = c_arbitrary(ctx, u)?;
+            let name = ident_to_name(&ident).into();
+            (vec![(ident, mt, ty)], semantics::Expr::Var(name))
+        }
+        semantics::Expr::Struct(name, ty_args, fields) => {
+            let init: Result<(_, Vec<(StringWrapper, semantics::Expr)>)> = 
+                Ok((vec![], vec![]));
+            let (extra_args, kvs_vec) = 
+                fields.into_iter()
+                    .fold(init, |acc, (k, v)| {
+                        let (mut e_args, mut kvs) = acc?;
+                        let (new_args, processed_v) = extract_additional_args(ctx, u, v)?;
+                        kvs.push((k, processed_v));
+                        e_args.extend(new_args);
+                        Ok((e_args, kvs))
+                    })?;
+            let processed_fields: HashMap<_,_> = kvs_vec.into_iter().collect();
+            (extra_args, semantics::Expr::Struct(name, ty_args, processed_fields))
+        }
+        semantics::Expr::Fn(name, ty_args, args) => {
+            let init: Result<(_, Vec<semantics::Expr>)> = 
+                Ok((vec![], vec![]));
+            let (extra_args, processed_args) = 
+                args.into_iter()
+                    .fold(init, |acc, a| {
+                        let (mut e_as, mut proc_as) = acc?;
+                        let (new_args, processed_arg) = extract_additional_args(ctx, u, a)?;
+                        e_as.extend(new_args);
+                        proc_as.push(processed_arg);
+                        Ok((e_as, proc_as))
+                    })?;
+            (extra_args, semantics::Expr::Fn(name, ty_args, processed_args))
+        },
+        semantics::Expr::AssocFn(ty_name, ty_args, fn_name, fn_ty_args, args) => {
+            let init: Result<(_, Vec<semantics::Expr>)> = 
+                Ok((vec![], vec![]));
+            let (extra_args, processed_args) = 
+                args.into_iter()
+                    .fold(init, |acc, a| {
+                        let (mut e_as, mut proc_as) = acc?;
+                        let (new_args, processed_arg) = extract_additional_args(ctx, u, a)?;
+                        e_as.extend(new_args);
+                        proc_as.push(processed_arg);
+                        Ok((e_as, proc_as))
+                    })?;
+            (extra_args, semantics::Expr::AssocFn(
+                ty_name,
+                ty_args,
+                fn_name,
+                fn_ty_args,
+                processed_args
+            ))
+        }
+        semantics::Expr::Method(disc, name, ty_args, args) => {
+            let (first_extra_args, processed_disc) =
+                extract_additional_args(ctx, u, *disc)?;
+            let init: Result<(_, Vec<semantics::Expr>)> = 
+                Ok((first_extra_args, vec![]));
+            let (extra_args, processed_args) = 
+                args.into_iter()
+                    .fold(init, |acc, a| {
+                        let (mut e_as, mut proc_as) = acc?;
+                        let (new_args, processed_arg) = extract_additional_args(ctx, u, a)?;
+                        e_as.extend(new_args);
+                        proc_as.push(processed_arg);
+                        Ok((e_as, proc_as))
+                    })?;
+            (extra_args, semantics::Expr::Method(
+                Box::new(processed_disc),
+                name,
+                ty_args,
+                processed_args
+            ))
+        }
+        semantics::Expr::UnOp(name, op) => {
+            let (extra_args, processed_op) = extract_additional_args(ctx, u, *op)?;
+            (extra_args, semantics::Expr::UnOp(name, Box::new(processed_op)))
+        }
+        semantics::Expr::BinOp(name, lhs, rhs) => {
+            let (mut lhs_extra_args, processed_lhs) = extract_additional_args(ctx, u, *lhs)?;
+            let (rhs_extra_args, processed_rhs) = extract_additional_args(ctx, u, *rhs)?;
+            lhs_extra_args.extend(rhs_extra_args);
+            (lhs_extra_args, semantics::Expr::BinOp(
+                name,
+                Box::new(processed_lhs),
+                Box::new(processed_rhs)
+            ))
+        }
+        semantics::Expr::Field(disc, name) => {
+            let (extra_args, processed_disc) = extract_additional_args(ctx, u, *disc)?;
+            (extra_args, semantics::Expr::Field(Box::new(processed_disc), name))
+        }
+        semantics::Expr::Macro(name, body) => {
+            let init: Result<(_, Vec<semantics::Token>)> = Ok((vec![], vec![]));
+            let (extra_args, processed_tokens) = 
+                body.tokens.iter()
+                    .fold(init, |acc, token| {
+                        let (mut e_as, mut proc_body) = acc?;
+                        let (new_args, processed_token) = match token {
+                            semantics::Token::Expr(e) => {
+                                let (new_args, proc_e) = extract_additional_args(ctx, u, e.clone())?;
+                                (new_args, semantics::Token::Expr(proc_e))
+                            }
+                            _ => (vec![], token.clone())
+                        };
+                        e_as.extend(new_args);
+                        proc_body.push(processed_token);
+                        Ok((e_as, proc_body))
+                    })?;
+            (extra_args, semantics::Expr::Macro(name, semantics::MacroBody {
+                tokens: processed_tokens,
+                ..body
+            }))
+        }
+        _ => (vec![], e)
+    })
+}
+
+fn from_sem_generics(
+    _ctx: &mut Context, u: &mut Unstructured,
+    lt_generics: &Vec<StringWrapper>,
+    type_generics: &semantics::Generics
+) -> Result<Generics> {
+    let is_empty = 
+        lt_generics.len() + type_generics.len() == 0 &&
+        Arbitrary::arbitrary(u)?;
+    Ok(Generics {
+        lt_token: if is_empty {
+            None
+        } else {
+            parse_quote!(<)
+        },
+        params: lt_generics.iter().map(|lt| Ok(GenericParam::Lifetime(LifetimeDef {
+            attrs: vec![],
+            lifetime: Lifetime {
+                apostrophe: dummy_span(),
+                ident: name_to_ident(u, lt.as_str())?,
+            },
+            colon_token: parse_quote!(:),
+            // TODO: add lifetime bounds
+            bounds: iter::empty::<Lifetime>().collect()
+        }))).chain(type_generics.iter().map(|ty_gen| Ok(GenericParam::Type(TypeParam {
+            attrs: vec![],
+            ident: name_to_ident_det(ty_gen.name.as_str()),
+            colon_token: parse_quote!(:),
+            bounds: ty_gen.constraints.iter().map(|c|
+                Ok(TypeParamBound::Trait(TraitBound {
+                    // TODO: when is the paren token needed?
+                    paren_token: Some(Paren { span: dummy_span() }),
+                    modifier: TraitBoundModifier::None,
+                    lifetimes: None,
+                    path: syn::Path {
+                        leading_colon: None,
+                        segments: iter::once(PathSegment {
+                            ident: name_to_ident_det(c.trait_name.as_str()),
+                            // TODO: trait arguments
+                            arguments: PathArguments::None
+                        }).collect()
+                    }
+                })
+            )).collect::<Result<_>>()?,
+            // TODO: defaults
+            eq_token: None,
+            default: None
+        })))).collect::<Result<_>>()?,
+        gt_token: if is_empty {
+            None
+        } else {
+            parse_quote!(>)
+        },
+        // TODO: where clause
+        where_clause: None
+    })
+}
+
 fn name_to_ident(u: &mut Unstructured, name: &str) -> Result<Ident> {
     if name.starts_with("r#") {
         Ok(parse_str(name).unwrap())
@@ -934,22 +1124,22 @@ let (ret_ty, output) = lazy_choose!(u,  {
 impl<'a> ContextArbitrary<'a, Context> for Item {
     fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
         let top_lev = !ctx.regard_semantics || ctx.is_top_level;
-not_top_level!(ctx, guarded_lazy_choose!(u,  {
-    true => Item::Fn(c_arbitrary(ctx, u)?),
-    true => Item::Type(c_arbitrary(ctx, u)?),
-    !ctx.regard_semantics => Item::Trait(c_arbitrary(ctx, u)?),
-    true => Item::Enum(c_arbitrary(ctx, u)?),
-    true => Item::Struct(c_arbitrary(ctx, u)?),
-    // TODO:
-    // Impl(ItemImpl),
-    // Mod(ItemMod),
-    // Static(ItemStatic),
-    // TraitAlias(ItemTraitAlias),
-    // Union(ItemUnion),
-    // Use(ItemUse),
-    // Intentionally omitted: ExternCrate, ForeignMod, Macro, Verbatim
-    top_lev => Item::Static(c_arbitrary(ctx, u)?),
-    top_lev => Item::Const(c_arbitrary(ctx, u)?),
+        not_top_level!(ctx, guarded_lazy_choose!(u,  {
+            true => Item::Fn(c_arbitrary(ctx, u)?),
+            !ctx.regard_semantics => Item::Type(c_arbitrary(ctx, u)?),
+            !ctx.regard_semantics => Item::Trait(c_arbitrary(ctx, u)?),
+            true => Item::Enum(c_arbitrary(ctx, u)?),
+            true => Item::Struct(c_arbitrary(ctx, u)?),
+            // TODO:
+            // Impl(ItemImpl),
+            // Mod(ItemMod),
+            // Static(ItemStatic),
+            // TraitAlias(ItemTraitAlias),
+            // Union(ItemUnion),
+            // Use(ItemUse),
+            // Intentionally omitted: ExternCrate, ForeignMod, Macro, Verbatim
+            top_lev => Item::Static(c_arbitrary(ctx, u)?),
+            top_lev => Item::Const(c_arbitrary(ctx, u)?),
         }))
     }
 }
@@ -957,13 +1147,36 @@ not_top_level!(ctx, guarded_lazy_choose!(u,  {
 impl<'a> ContextArbitrary<'a, Context> for ItemStruct {
     fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
         let ident: Ident = c_arbitrary(ctx, u)?;
-        let generics = c_arbitrary(ctx, u)?;
+        let generics;
         let vis = c_arbitrary(ctx, u)?;
         let fields: Fields;
         if ctx.regard_semantics {
-            let kind = gen_to_kind(&generics, is_pub(&vis));
+            // TODO: handle having struct generics
+            // let lts: Vec<StringWrapper> = c_arbitrary_iter_with(ctx, u, |ctx, u| {
+            //     let ident: Ident = c_arbitrary(ctx, u)?;
+            //     let name = ident_to_name(&ident);
+            //     Ok(StringWrapper::from(name))
+            // }).collect::<Result<_>>()?;
+            // let tys: Vec<semantics::Generic> = c_arbitrary_iter_with(ctx, u, |ctx, u| {
+            //     let ident: Ident = c_arbitrary(ctx, u)?;
+            //     let name = ident_to_name(&ident).into();
+            //     Ok(semantics::Generic {
+            //         name,
+            //         is_arg_for_other: false,
+            //         // TODO: add constraints
+            //         constraints: vec![]
+            //     })
+            // }).collect::<Result<_>>()?;
+            let lts = vec![];
+            let tys = vec![];
+            generics = from_sem_generics(ctx, u, &lts, &tys)?;
+            let kind = semantics::Kind {
+                is_visible: is_pub(&vis),
+                lifetimes: lts.len(),
+                types: tys.len()
+            };
             let ty = kind_to_type(ident_to_name(&ident), &kind);
-            let sem_fields = generate_sem_fields(ctx, u, &ty)?;
+            let sem_fields = generate_sem_fields(ctx, u, is_pub(&vis), &ty, &lts, &tys)?;
             add_struct(ctx, ident_to_name(&ident).into(), semantics::Struct {
                 is_enum_variant: false,
                 ty: Rc::new(ty),
@@ -971,6 +1184,7 @@ impl<'a> ContextArbitrary<'a, Context> for ItemStruct {
             });
             fields = sem_fields.into();
         } else {
+            generics = c_arbitrary(ctx, u)?;
             fields = c_arbitrary(ctx, u)?;
         }
         Ok(ItemStruct {
@@ -990,15 +1204,18 @@ impl<'a> ContextArbitrary<'a, Context> for ItemStruct {
 impl<'a> ContextArbitrary<'a, Context> for ItemEnum {
     fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
         let ident: Ident = c_arbitrary(ctx, u)?;
-        // TODO: the enum can't be public if one of it's members aren't. Right now enums
-        // are conservatively set to private, but ideally they should be able to be public
-        // when possible.
-        // let vis: Visibility = c_arbitrary(ctx, u)?;
-        let vis = Visibility::Inherited;
-        let generics = c_arbitrary(ctx, u)?;
+        let vis: Visibility = c_arbitrary(ctx, u)?;
         let variants: Punctuated<Variant, Token![,]>;
+        let generics;
         if ctx.regard_semantics {
-            let kind = gen_to_kind(&generics, is_pub(&vis));
+            let lts = vec![];
+            let tys = vec![];
+            generics = from_sem_generics(ctx, u, &lts, &tys)?;
+            let kind = Kind {
+                is_visible: is_pub(&vis),
+                lifetimes: lts.len(),
+                types: lts.len()
+            };
             let ty = kind_to_type(ident_to_name(&ident), &kind);
             // If the enum doesn't have any variants, don't add it to the types
             // because it won't be possible to construct it without cheating
@@ -1009,7 +1226,7 @@ impl<'a> ContextArbitrary<'a, Context> for ItemEnum {
                     add_type(ctx, ident_to_name(&ident).into(), kind.clone());
                 }
                 let name: Ident = c_arbitrary(ctx, u)?;
-                let fields = generate_sem_fields(ctx, u, &ty)?;
+                let fields = generate_sem_fields(ctx, u, is_pub(&vis), &ty, &lts, &tys)?;
                 Ok((name, fields))
             }).collect::<Result<Vec<(Ident, semantics::Fields)>>>()?;
             let mut local_variants = vec![];
@@ -1030,6 +1247,7 @@ impl<'a> ContextArbitrary<'a, Context> for ItemEnum {
             }
             variants = local_variants.into_iter().collect();
         } else {
+            generics = c_arbitrary(ctx, u)?;
             variants = c_arbitrary(ctx, u)?;
         }
         Ok(ItemEnum {
@@ -1074,80 +1292,56 @@ fn remove_visibility(fields: Fields) -> Fields {
     }
 }
 
-fn generate_sem_fields(ctx: &mut Context, u: &mut Unstructured, ty: &semantics::Type) -> Result<semantics::Fields> {
+fn generate_sem_fields(
+    ctx: &mut Context,
+    u: &mut Unstructured,
+    vis: bool,
+    ty: &semantics::Type,
+    lts: &Vec<StringWrapper>,
+    _tys: &Vec<semantics::Generic>,
+) -> Result<semantics::Fields> {
+    // TODO: make sure that all tys and lts are used
+    let fields = c_arbitrary_iter_with(ctx, u, |ctx, u| {
+        let mut field_ty = pick_type_that(
+            ctx, u,
+            |_,k| lts.len() > 0 || k.lifetimes == 0 && (!vis || k.is_visible)
+        )?;
+        let vis = !field_ty.is_private();
+        if field_ty.is_sized_by(&ty.name) {
+            field_ty = guarded_lazy_choose!(u, {
+                true => semantics::Type {
+                    type_args: vec![field_ty],
+                    ..make_type!(Box)
+                },
+                // true => semantics::Type {
+                //    type_args: vec![field_ty],
+                //    ..make_type!(std::rc::Rc)
+                // },
+                true => semantics::Type {
+                    type_args: vec![field_ty],
+                    ..make_type!(Vec)
+                },
+                lts.len() > 0 => semantics::Type {
+                    type_args: vec![field_ty],
+                    ..make_type!(& field_ty)
+                }
+            })?;
+        }
+        if lts.len() > 0 {
+            field_ty = field_ty.assign_lts(u, lts)?;
+        }
+        Ok(semantics::Field {
+            ty: Rc::new(field_ty),
+            visible: vis,
+        })
+    }).collect::<Result<Vec<semantics::Field>>>()?;
     Ok(if Arbitrary::arbitrary(u)? {
-        semantics::Fields::Named(c_arbitrary_iter_with(ctx, u, |ctx, u| {
-            let ident: Ident = c_arbitrary(ctx, u)?;
-            let (field_ty, vis) = pick_type_with_vis(ctx, u)?;
-            Ok((ident_to_name(&ident).into(), semantics::Field {
-                visible: vis,
-                ty: Rc::new(if field_ty.is_sized_by(&ty.name) {
-                    lazy_choose!(u, {
-                        semantics::Type {
-                            type_args: vec![field_ty],
-                            ..make_type!(Box)
-                        },
-                        // semantics::Type {
-                        //    type_args: vec![field_ty],
-                        //    ..make_type!(Rc)
-                        // },
-                        semantics::Type {
-                            type_args: vec![field_ty],
-                            ..make_type!(Vec)
-                        },
-                        // Reference
-                    })?
-                } else {
-                    field_ty
-                })
-            }))
+        semantics::Fields::Named(fields.into_iter().map(|field| {
+            Ok((ident_to_name(&c_arbitrary(ctx, u)?).into(), field))
         }).collect::<Result<HashMap<StringWrapper, semantics::Field>>>()?)
     } else {
-        semantics::Fields::Unnamed(c_arbitrary_iter_with(ctx, u, |ctx, u| {
-            let (field_ty, vis) = pick_type_with_vis(ctx, u)?;
-            Ok(semantics::Field {
-                visible: vis,
-                ty: Rc::new(if field_ty.is_sized_by(&ty.name) {
-                        lazy_choose!(u, {
-                            semantics::Type {
-                                type_args: vec![field_ty],
-                                ..make_type!(Box)
-                            },
-                            // semantics::Type {
-                            //    type_args: vec![field_ty],
-                            //    ..make_type!(Rc)
-                            // },
-                            semantics::Type {
-                                type_args: vec![field_ty],
-                                ..make_type!(Vec)
-                            },
-                            // Reference
-                        })?
-                    } else {
-                        field_ty
-                    })
-
-                })
-            }).collect::<Result<Vec<semantics::Field>>>()?)
-        })
-}
-
-fn gen_to_kind(generics: &Generics, is_visible: bool) -> Kind {
-    let mut lifetimes = 0;
-    let mut types = 0;
-    let mut _consts = 0;
-    for param in generics.params.iter() {
-        match param {
-            GenericParam::Type(_) => types += 1,
-            GenericParam::Lifetime(_) => lifetimes += 1,
-            GenericParam::Const(_) => _consts += 1
-        }
-    }
-    semantics::Kind {
-        is_visible,
-        lifetimes,
-        types
-    }
+        semantics::Fields::Unnamed(fields)
+    })
 }
 
 impl<'a> ContextArbitrary<'a, Context> for Variant {
@@ -1349,12 +1543,10 @@ impl<'a> ContextArbitrary<'a, Context> for ItemFn {
         let sig;
         let block;
         if ctx.regard_semantics {
-            let old_final_only = mem::replace(&mut ctx.final_stmnt_only, vec![]);
             let new_scope = Rc::clone(&ctx.basic_scopes);
             let old_scope = mem::replace(&mut ctx.scopes, new_scope);
             push_scope(ctx);
-            let (fn_type, sig_tmp) = type_with_sig(ctx, u)?;
-            // TODO: the types in the generics should be visible inside the functions scope
+            let (fn_type, final_expr, sig_tmp) = type_with_sig(ctx, u)?;
             sig = sig_tmp;
             let ret_type = fn_type.func.clone().unwrap().ret_type;
             add_var(ctx, ident_to_name(&sig.ident).into(), Variable::new(
@@ -1365,10 +1557,10 @@ impl<'a> ContextArbitrary<'a, Context> for ItemFn {
             block = with_attrs!(ctx {
                 needs_new_scope = false,
                 allow_ambiguity = true,
-                expected_type = ret_type
+                expected_type = ret_type,
+                precomputed_final = final_expr
             }, c_arbitrary(ctx, u)?);
             ctx.scopes = old_scope;
-            ctx.final_stmnt_only = old_final_only;
             add_var(ctx, ident_to_name(&sig.ident).into(), Variable::new(
                 fn_type,
                 semantics::Mutability::Immutable,
@@ -1608,14 +1800,17 @@ impl<'a> ContextArbitrary<'a, Context> for Variadic {
 }
 
 fn type_with_sig(ctx: &mut Context, u: &mut Unstructured)
--> Result<(semantics::Type, Signature)> {
+-> Result<(semantics::Type, Option<semantics::Expr>, Signature)> {
 
     let inputs: Punctuated<FnArg, Token![,]>;
     let output: ReturnType;
-    let mut result = vec![];
+    let final_expr;
+    let mut input_vec = vec![];
     let mut input_tys: Vec<semantics::Type> = vec![];
-    let mut lt_generics = vec![];
-    let output_ty;
+    let mut lt_generics: Vec<StringWrapper> = c_arbitrary_iter_with(ctx, u, |ctx, u| {
+        Ok(ident_to_name(&c_arbitrary(ctx, u)?).into())
+    }).collect::<Result<Vec<_>>>()?;
+    let mut output_ty;
     // TODO: handle constraints
     let type_generics = c_arbitrary_iter_with(ctx, u, |ctx, u| {
         Ok(Generic {
@@ -1634,7 +1829,7 @@ fn type_with_sig(ctx: &mut Context, u: &mut Unstructured)
 
     // We only want types that are possible to construct in the body/return type
     for gen in type_generics.iter() {
-        if input_tys.iter().all(|ty| ty.name != gen.name) {
+        if input_tys.iter().all(|ty| !ty.contains(&gen.name)) {
             remove_type(ctx, gen.name.clone());
         }
     }
@@ -1654,50 +1849,48 @@ fn type_with_sig(ctx: &mut Context, u: &mut Unstructured)
             for (name, var) in vars {
                 add_var(ctx, name, var);
             }
-            result.push(FnArg::Typed(PatType {
+            input_vec.push(FnArg::Typed(PatType {
                 attrs: vec![],
                 colon_token: parse_quote!(:),
                 pat: Box::new(pat),
                 ty: Box::new(ty.into())
             }));
         }
-        let (reserved_input, output_ty_tmp) = lazy_choose!(u, {
-            (None, pick_type(ctx, u)?),
-            {
-                let lt_ident: Ident = lifetime!(ctx, c_arbitrary(ctx, u)?);
-                let ident_name: StringWrapper = ident_to_name(&lt_ident).into();
-                lt_generics.push(ident_name.clone());
-                let output_ty = make_ref(ident_name, pick_type(ctx, u)?);
-                // TODO: allow borrowing e.g. structure fields
-                let input_ty = output_ty.clone();
-                let input_ident: Ident = c_arbitrary(ctx, u)?;
-                let input_name: StringWrapper = ident_to_name(&input_ident).into();
-                // the lt of the variable holding the reference, not the thing the
-                // reference points to
-                let ref_lt = fresh_lt(ctx);
-                add_var(ctx, input_name.clone(), Variable::new(
-                    input_ty.clone(),
-                    semantics::Mutability::Immutable,
-                    ref_lt
-                ));
-                result.push(FnArg::Typed(PatType {
+
+        output_ty = pick_type(ctx, u)?;
+        if output_ty.needs_lt() {
+            let lt_ident: Ident = lifetime!(ctx, c_arbitrary(ctx, u)?);
+            let ident_name: StringWrapper = ident_to_name(&lt_ident).into();
+            lt_generics.push(ident_name.clone());
+            output_ty = output_ty.assign_lts(u, &lt_generics)?;
+            let raw_final_expr =
+                can_demand_args!(ctx, construct_value(ctx, u, output_ty.clone(), true)?);
+            let (additional_args, final_expr_tmp) =
+                extract_additional_args(ctx, u, raw_final_expr)?;
+            for (ident, mt, ty) in additional_args {
+                input_vec.push(FnArg::Typed(PatType {
                     attrs: vec![],
                     colon_token: parse_quote!(:),
+                    ty: Box::new(ty.into()),
                     pat: Box::new(Pat::Ident(PatIdent {
                         attrs: vec![],
+                        ident,
+                        mutability: if mt == semantics::Mutability::Mutable {
+                            parse_quote!(mut)
+                        } else {
+                            None
+                        },
                         by_ref: None,
-                        mutability: None,
-                        ident: input_ident,
-                        subpat: None
-                    })),
-                    ty: Box::new(input_ty.clone().into())
+                        subpat: None,
+                    }))
                 }));
-                input_tys.push(input_ty.clone());
-                (Some(input_name), output_ty) }
-        })?;
-        output_ty = output_ty_tmp;
-        reserved_input.map(|i| reserve_var(ctx, i));
-        inputs = result.into_iter().collect();
+            }
+            final_expr = Some(final_expr_tmp);
+            // TODO: allow borrowing e.g. structure fields
+        } else {
+            final_expr = None;
+        };
+        inputs = input_vec.into_iter().collect();
         if output_ty.matches(&make_type!(())) && Arbitrary::arbitrary(u)? {
             output = ReturnType::Default;
         } else {
@@ -1744,8 +1937,9 @@ fn type_with_sig(ctx: &mut Context, u: &mut Unstructured)
         func: Some(Box::new(Func {
             args: input_tys,
             ret_type: output_ty
-        }))
-    }, Signature {
+        })),
+        is_visible: true
+    }, final_expr, Signature {
             constness: None,
             asyncness: None,
             unsafety: None,
@@ -1877,15 +2071,15 @@ impl<'a> ContextArbitrary<'a, Context> for PatIdent {
     fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
         Ok(PatIdent {
             attrs: vec![],
-by_ref: guarded_lazy_choose!(u, {
-    true => None,
-    !ctx.regard_semantics => parse_quote!(ref)
+            by_ref: guarded_lazy_choose!(u, {
+                true => None,
+                !ctx.regard_semantics => parse_quote!(ref)
             })?,
             mutability: maybe(u, parse_quote!(mut)),
             ident: c_arbitrary(ctx, u)?,
-subpat: guarded_lazy_choose!(u, {
-    true => None,
-    !ctx.regard_semantics => Some((parse_quote!(@), c_arbitrary(ctx, u)?))
+            subpat: guarded_lazy_choose!(u, {
+                true => None,
+                !ctx.regard_semantics => Some((parse_quote!(@), c_arbitrary(ctx, u)?))
             })?
         })
     }
@@ -2041,6 +2235,7 @@ impl<'a> ContextArbitrary<'a, Context> for Block {
             // TODO: if there is a (guaranteed) return/break somewhere, the last
             //       statement can be skipped
             let mut scope_added = false;
+            let precomputed = mem::replace(&mut ctx.precomputed_final, None);
             if ctx.needs_new_scope {
                 push_scope(ctx);
                 scope_added = true;
@@ -2062,11 +2257,18 @@ impl<'a> ContextArbitrary<'a, Context> for Block {
                     }
                 }
             }
-            ctx.is_final_stmnt = true;
-            let final_stmt = guarded_lazy_choose!(u, {
-                ctx.expected_type.matches(&make_type!(())) => None,
-                true => Some(Stmt::Expr(c_arbitrary(ctx, u)?))
-            })?;
+            let final_stmt;
+            if let Some(ref final_raw) = precomputed {
+                // TODO: the final stmnt could be part of e.g. a block or an if
+                final_stmt = Some(Stmt::Expr(from_sem_expr(ctx, u, final_raw)?));
+            } else {
+                ctx.is_final_stmnt = true;
+                final_stmt = guarded_lazy_choose!(u, {
+                    ctx.expected_type.matches(&make_type!(())) => None,
+                    true => Some(Stmt::Expr(c_arbitrary(ctx, u)?))
+                })?;
+                ctx.is_final_stmnt = true;
+            }
             stmts = init_stmts.into_iter()
                 .chain(final_stmt.into_iter())
                 .collect::<Vec<Stmt>>();
@@ -2140,62 +2342,62 @@ impl<'a> ContextArbitrary<'a, Context> for Local {
 }
 
 fn pattern_of_type<'a, 'b>(
-ctx: &mut Context,
-u: &mut Unstructured<'a>,
-ty: &'b semantics::Type
+    ctx: &mut Context,
+    u: &mut Unstructured<'a>,
+    ty: &'b semantics::Type
 ) -> Result<(Pat, Vec<(StringWrapper, Variable)>)> {
     let needs_type_pat = ctx.allow_ambiguity && ctx.is_top_pattern;
-guarded_lazy_choose!(u, {
-    ctx.is_top_pattern => {
-        let (pat, sub_vars) = sub_pattern!(ctx, pattern_of_type(ctx, u, ty)?);
-        (Pat::Type(PatType {
-            attrs: vec![],
-            colon_token: parse_quote!(:),
-            pat: Box::new(pat),
-            ty: Box::new(ty.clone().into())
-        }), sub_vars)
-    },
-    !needs_type_pat => {
-        let pat: PatIdent = c_arbitrary(ctx, u)?;
-        let name = ident_to_name(&pat.ident).into();
-        let mutability = match pat.mutability {
-            Some(_) => semantics::Mutability::Mutable,
-            None => semantics::Mutability::Immutable,
-        };
-        (Pat::Ident(pat), vec![(name, Variable::new(
-            ty.clone(), mutability, fresh_lt(ctx)
-        ))])
-    },
-    !needs_type_pat => (Pat::Wild(PatWild{
-        attrs:vec![],
-        underscore_token:parse_quote!(_)
-    }), vec![]),
-    !needs_type_pat && ty.name.as_str().starts_with("#Tuple") => {
-        let mut fields = vec![];
-        let mut sub_vars = vec![];
-        // TODO: do we need to end the lifetime of the thing being destructured?
-        for type_arg in &ty.type_args {
-            let (field, sub_var) = sub_pattern!(ctx, pattern_of_type(ctx, u, type_arg)?);
-            fields.push(field);
-            sub_vars.extend(sub_var);
-        }
-        let tuple = Pat::Tuple(PatTuple {
-            attrs: vec![],
-            paren_token: Paren { span: dummy_span() },
-            elems: fields.into_iter().collect()
-        });
-        (tuple, sub_vars)
-    },
-    !needs_type_pat &&  ty.name == "#Ref" => {
-        let (inner, sub_vars) = sub_pattern!(ctx, pattern_of_type(ctx, u, &ty.type_args[0])?);
-        (Pat::Reference(PatReference{
-            attrs: vec![],
-            and_token: parse_quote!(&),
-            // TODO: check if this can be mutable
-            mutability: None,
-            pat: Box::new(inner)
-        }), sub_vars)
-    }
+    guarded_lazy_choose!(u, {
+        ctx.is_top_pattern => {
+            let (pat, sub_vars) = sub_pattern!(ctx, pattern_of_type(ctx, u, ty)?);
+            (Pat::Type(PatType {
+                attrs: vec![],
+                colon_token: parse_quote!(:),
+                pat: Box::new(pat),
+                ty: Box::new(ty.clone().into())
+            }), sub_vars)
+        },
+        !needs_type_pat => {
+            let pat: PatIdent = c_arbitrary(ctx, u)?;
+            let name = ident_to_name(&pat.ident).into();
+            let mutability = match pat.mutability {
+                Some(_) => semantics::Mutability::Mutable,
+                None => semantics::Mutability::Immutable,
+            };
+            (Pat::Ident(pat), vec![(name, Variable::new(
+                ty.clone(), mutability, fresh_lt(ctx)
+            ))])
+        },
+        !needs_type_pat => (Pat::Wild(PatWild{
+            attrs:vec![],
+            underscore_token:parse_quote!(_)
+        }), vec![]),
+        !needs_type_pat && ty.name.starts_with("#Tuple") => {
+            let mut fields = vec![];
+            let mut sub_vars = vec![];
+            // TODO: do we need to end the lifetime of the thing being destructured?
+            for type_arg in &ty.type_args {
+                let (field, sub_var) = sub_pattern!(ctx, pattern_of_type(ctx, u, type_arg)?);
+                fields.push(field);
+                sub_vars.extend(sub_var);
+            }
+            let tuple = Pat::Tuple(PatTuple {
+                attrs: vec![],
+                paren_token: Paren { span: dummy_span() },
+                elems: fields.into_iter().collect()
+            });
+            (tuple, sub_vars)
+        },
+        // !needs_type_pat && ty.name == "#Ref" => {
+        //     let (inner, sub_vars) = sub_pattern!(ctx, pattern_of_type(ctx, u, &ty.type_args[0])?);
+        //     (Pat::Reference(PatReference{
+        //         attrs: vec![],
+        //         and_token: parse_quote!(&),
+        //         // TODO: check if this can be mutable
+        //         mutability: None,
+        //         pat: Box::new(inner)
+        //     }), sub_vars)
+        // }
     })
     // TODO: add more patterns
 }
@@ -2942,13 +3144,73 @@ lazy_choose!(u,  {
 }
 
 impl<'a> ContextArbitrary<'a, Context> for Generics {
-    fn c_arbitrary(_ctx: &mut Context, _u: &mut Unstructured<'a>) -> Result<Self> {
-        // TEMPORARY
+    fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
         Ok(Generics {
             lt_token: parse_quote!(<),
-            params: empty::<GenericParam>().collect(),
+            params: c_arbitrary(ctx, u)?,
             gt_token: parse_quote!(>),
             where_clause: None,
+        })
+    }
+}
+
+impl<'a> ContextArbitrary<'a, Context> for GenericParam {
+    fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
+        guarded_lazy_choose!(u, {
+            true => GenericParam::Type(c_arbitrary(ctx, u)?),
+            true => GenericParam::Lifetime(c_arbitrary(ctx, u)?),
+            !ctx.regard_semantics => GenericParam::Const(c_arbitrary(ctx, u)?)
+        })
+    }
+}
+
+impl<'a> ContextArbitrary<'a, Context> for TypeParam {
+    fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
+        let bounds: Punctuated<TypeParamBound, Token![+]> = guarded_lazy_choose!(u, {
+            !ctx.regard_semantics => c_arbitrary(ctx, u)?,
+            true => iter::empty::<TypeParamBound>().collect()
+        })?;
+        let r#default = guarded_lazy_choose!(u, {
+            !ctx.regard_semantics => Some(c_arbitrary(ctx, u)?),
+            true => None
+        })?;
+
+        Ok(TypeParam {
+            attrs: vec![],
+            ident: c_arbitrary(ctx, u)?,
+            colon_token: if bounds.len() > 0 { parse_quote!(=) } else { None }, 
+            bounds,
+            eq_token: default.as_ref().map(|_| parse_quote!(=)),
+            r#default,
+        })
+    }
+}
+
+impl<'a> ContextArbitrary<'a, Context> for LifetimeDef {
+    fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
+        let bounds: Punctuated<Lifetime, Token![+]> = guarded_lazy_choose!(u, {
+            !ctx.regard_semantics => c_arbitrary(ctx, u)?,
+            true => iter::empty::<Lifetime>().collect()
+        })?;
+        Ok(LifetimeDef {
+            attrs: vec![],
+            lifetime: c_arbitrary(ctx, u)?,
+            colon_token: if bounds.len() > 0 { parse_quote!(=) } else { None }, 
+            bounds,
+        })
+    }
+}
+
+impl<'a> ContextArbitrary<'a, Context> for ConstParam {
+    fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
+        Ok(ConstParam {
+            attrs: vec![],
+            const_token: parse_quote!(const),
+            ident: c_arbitrary(ctx, u)?,
+            colon_token: parse_quote!(:),
+            ty: c_arbitrary(ctx, u)?,
+            eq_token: parse_quote!(=),
+            default: c_arbitrary(ctx, u)?
         })
     }
 }

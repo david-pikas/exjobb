@@ -4,7 +4,6 @@ use std::rc::Rc;
 
 use crate::semantics;
 use crate::semantics::Lifetime;
-use crate::semantics::StringWrapper;
 
 use super::semantics::{Stack, Scope, Operator, prelude_scope, operators, primitive_scope};
 
@@ -76,19 +75,20 @@ pub struct Context {
     pub is_top_pattern: bool,
     /// (CURRENTLY UNUSED): Does this block belong to a function?
     pub is_fn_block: bool,
-    /// (Semantics only): is this the final statement of a block? Is used together
-    /// with final_stmnt_only to know when they are allowed to be used. Note that
-    /// a final stmnt can itself contain a block, which must then unset and set 
-    /// this flag
+    /// (Semantics only): is this the final statement of a block?
     pub is_final_stmnt: bool,
+    /// (Semantics only): if a function returns e.g. a reference, the only way to construct
+    /// an expression with a reference of appropriate lifetime is if it comes as an arg.
+    /// The only circumstance when semantics::Expr::AdditionalArg is allowed to be used.
+    pub can_demand_additional_args: bool,
+    /// (Semantics only): when creating a value that can demand additional args, this must
+    /// be done before creating the rest of the body so that recursive calls to the function
+    /// in the body have the right number of arguments
+    pub precomputed_final: Option<semantics::Expr>,
     /// (Semantics only): the size of the current expression being made.  It is
     /// set by the children of a recursive call back to their parent so that if
     /// one sibling is very large, other siblings have to be smaller etc.
     pub size: Cell<usize>,
-    /// (Semantics only): variables that should not be moved. For instance, a
-    /// function that returns a reference needs the var that the reference comes
-    /// from to still be alive at the end of the function so it can be returned
-    pub final_stmnt_only: Vec<StringWrapper>,
 }
 impl Context {
     pub fn make_context(options: Options) -> Context {
@@ -138,8 +138,9 @@ impl Context {
             is_top_pattern: false,
             is_fn_block: false,
             is_final_stmnt: false,
+            can_demand_additional_args: false,
+            precomputed_final: None,
             size: Cell::new(0),
-            final_stmnt_only: vec![],
         }
     }
 }
@@ -148,10 +149,6 @@ pub fn fresh_lt(ctx: &mut Context) -> Lifetime {
     let result = Lifetime::Anon(ctx.lifetime);
     ctx.lifetime += 1;
     return result;
-}
-
-pub fn reserve_var(ctx: &mut Context, name: StringWrapper) {
-    ctx.final_stmnt_only.push(name);
 }
 
 #[macro_export]
@@ -270,4 +267,9 @@ macro_rules! fn_block {
 #[macro_export]
 macro_rules! not_fn_block {
 ($ctx: ident, $e: expr) => (with_attrs!($ctx{ is_fn_block = false }, $e))
+}
+
+#[macro_export]
+macro_rules! can_demand_args {
+($ctx: ident, $e: expr) => (with_attrs!($ctx{ can_demand_additional_args = true }, $e))
 }
