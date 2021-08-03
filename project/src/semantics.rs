@@ -52,6 +52,9 @@ impl StringWrapper {
             StringWrapper::Dynamic(s) => &*s
         }
     }
+    pub fn starts_with(&self, p: &str) -> bool {
+        self.as_str().starts_with(p)
+    }
 }
 
 impl PartialEq<String> for StringWrapper {
@@ -85,7 +88,7 @@ impl From<&'static str> for StringWrapper {
     }
 }
 #[derive(PartialEq, Clone, Debug)]
-pub enum Mutability { Immutable, Unnasigned, Mutable }
+pub enum Mutability { Immutable, Mutable }
 #[derive(PartialEq, Eq, Hash, Clone, Debug)]
 pub enum Lifetime {
     Named(StringWrapper),
@@ -135,7 +138,8 @@ pub struct Type {
     pub type_generics: Generics,
     pub lt_args: Vec<Lifetime>,
     pub type_args: Vec<Type>,
-    pub func: Option<Box<Func>>
+    pub func: Option<Box<Func>>,
+    pub is_visible: bool
 }
 
 impl Display for Type {
@@ -179,7 +183,7 @@ pub struct Func {
     pub ret_type: Type
 }
 #[derive(PartialEq, Clone, Debug)]
-pub struct Kind { pub is_visible: bool, pub lifetimes: u8, pub types: u8 }
+pub struct Kind { pub is_visible: bool, pub lifetimes: usize, pub types: usize }
 #[derive(PartialEq, Clone, Debug)]
 pub struct Field { pub visible: bool, pub ty: Rc<Type> }
 #[derive(PartialEq, Clone, Debug)]
@@ -207,7 +211,7 @@ impl<'a> Iterator for FieldsIter<'a> {
     }
 }
 impl Fields {
-    fn iter(&self) -> FieldsIter {
+    pub fn iter(&self) -> FieldsIter {
         match self {
             Fields::Unnamed(vec) => FieldsIter::Unnamed(vec.iter(), 0),
             Fields::Named(hm) => FieldsIter::Named(hm.iter()),
@@ -413,7 +417,7 @@ impl Scope {
                 .or_insert(Default::default())
                 .structs.insert(name.clone(), struc.clone());
             for (name, field) in struc.fields.iter() {
-                if !struc.is_enum_variant && !struc.ty.name.as_str().starts_with("#Tuple") {
+                if !struc.is_enum_variant && !struc.ty.name.starts_with("#Tuple") {
                     if field.ty.is_generic_with(&struc.ty.type_generics).is_some() {
                         self.by_ty_name.entry("#Generic".into())
                             .or_insert(Default::default())
@@ -536,11 +540,15 @@ pub enum Expr {
     BinOp(&'static str, Box<Expr>, Box<Expr>),
     Field(Box<Expr>, StringWrapper),
     Macro(StringWrapper, MacroBody),
-    ExactString(String)
+    ExactString(String),
+    AdditionalArg(Type, Mutability)
 }
 
 
 impl Type {
+    pub fn sub_tys<'a>(&'a self) -> Box<dyn Iterator<Item=&Type> + 'a> {
+        Box::new(iter::once(self).chain(self.type_args.iter()))
+    }
     pub fn matches(&self, other: &Type) -> bool {
         self.matches_with_generics(other, &self.type_generics)
     }
@@ -561,8 +569,8 @@ impl Type {
         if self.name == "!" {
             return true;
         } 
-        if self.name != other.name &&
-            !(self.name == "#RefMut" && other.name == "#Ref") {
+        if self.name != other.name /*&&
+            !(self.name == "#RefMut" && other.name == "#Ref")*/ {
             return false;
         }
 
@@ -651,15 +659,22 @@ impl Type {
         // Box is unneccesary, just there to avoid typing out the horrible return type
         Box::new(self.lt_generics.iter().map(|t| t.clone()))
     }
-    pub fn contains(&self, name: &StringWrapper) -> bool {
-        &self.name == name
+    pub fn contains<S>(&self, name: &S) -> bool
+        where StringWrapper: PartialEq<S> {
+        self.name.eq(name)
         || self.type_args.iter().any(|arg| arg.contains(name))
+    }
+    pub fn contains_lt<S>(&self, name: &S) -> bool
+        where StringWrapper: PartialEq<S> {
+        self.lt_args.iter().any(|lt| lt.name().map_or(false, |lt_name| lt_name == name))
+        || self.type_args.iter().any(|arg| arg.contains_lt(name))
     }
     pub fn diff<'a>(&'a self, other: &'a Type) -> Box<dyn Iterator<Item = (StringWrapper, &Type)> + 'a> {
         Box::new(self.diff_sym(other).map(|(a,b)| (a.name.clone(), b)))
     }
     pub fn diff_sym<'a>(&'a self, other: &'a Type) -> Box<dyn Iterator<Item = (&Type, &Type)> + 'a> {
-        if self.name != other.name {
+        if self.name != other.name /*&& 
+            !(self.name == "#RefMut" && other.name == "#Ref")*/ {
             return Box::new(iter::once((self, other)));
         } else {
             Box::new(
@@ -695,6 +710,25 @@ impl Type {
             ..self.clone()
         }
     }
+    pub fn needs_lt(&self) -> bool {
+        self.lt_args.iter().any(|lt| lt == &Lifetime::Any) ||
+        self.type_args.iter().any(|a| a.needs_lt())
+    }
+    pub fn assign_lts(&self, u: &mut Unstructured, lts: &Vec<StringWrapper>) -> arbitrary::Result<Type> {
+        Ok(Type {
+            lt_args: self.lt_args.iter().map(|lt| {
+                if lt == &Lifetime::Any || 
+                    lt.name().map_or(false, |n| self.lt_generics.contains(n)) {
+                    Ok(Lifetime::Named(u.choose(lts)?.clone()))
+                } else {
+                    Ok(lt.clone())
+                }
+            }).collect::<arbitrary::Result<Vec<Lifetime>>>()?,
+            type_args: self.type_args.iter().map(|t| t.assign_lts(u, lts))
+                .collect::<arbitrary::Result<Vec<_>>>()?,
+            ..self.clone()
+        })
+    }
     pub fn is_sized_by(&self, name: &StringWrapper) -> bool {
         !INDIRECT_TYPES.contains(&name.as_str()) &&
         (&self.name == name
@@ -717,6 +751,9 @@ impl Type {
             return false;
         }
         return true;
+    }
+    pub fn is_private(&self) -> bool {
+        self.sub_tys().any(|t| !t.is_visible)
     }
 }
 
@@ -767,7 +804,7 @@ pub fn end_lifetime(ctx: &Context, lt: &Lifetime) {
             return;
         }
     }
-    panic!("Attemted to remove lifetime {:?}, but it couldn't be found", lt);
+    // panic!("Attemted to remove lifetime {:?}, but it couldn't be found", lt);
 }
 
 // macro_rules! with_scope {
@@ -817,17 +854,6 @@ pub fn add_struct(ctx: &mut Context, name: StringWrapper, struc: Struct) {
             .structs.insert(name.clone(), rc_struc.clone());
         l.structs.insert(name, rc_struc);
     });
-}
-
-pub fn make_ref(lt_arg: StringWrapper, ty: Type) -> Type {
-    Type {
-        name: "#Ref".into(),
-        type_args: vec![ty],
-        lt_args: vec![Lifetime::Named(lt_arg)],
-        type_generics: vec![],
-        lt_generics: vec![],
-        func: None
-    }
 }
 
 #[allow(dead_code)]
@@ -891,16 +917,36 @@ pub fn pick_type<'a>(ctx: &Context, u: &mut Unstructured<'a>) -> arbitrary::Resu
 }
 
 pub fn pick_type_with_vis<'a>(ctx: &Context, u: &mut Unstructured<'a>) -> arbitrary::Result<(Type, bool)> {
+    pick_type_with_vis_that(ctx, u, |_,_| true)
+}
+
+pub fn pick_type_that<'a, F>(ctx: &Context, u: &mut Unstructured<'a>, pred: F)
+    -> arbitrary::Result<Type> where F: Fn(&StringWrapper, &Kind) -> bool + Clone {
+    Ok(pick_type_with_vis_that(ctx, u, pred)?.0)
+}
+
+pub fn pick_type_with_vis_that<'a, F>(
+    ctx: &Context,
+    u: &mut Unstructured<'a>,
+    pred: F
+) -> arbitrary::Result<(Type, bool)> 
+where F: Fn(&StringWrapper, &Kind) -> bool + Clone {
     let non_empty_scopes: Vec<&Scope> =
         ctx.scopes.iter().filter(|s| !s.types.is_empty()).collect();
     let scope: &Scope = choose_consume(u, non_empty_scopes.into_iter())?;
-    let kinds: Vec<(&StringWrapper, &Kind)> = scope.types.iter().collect();
+    let kinds: Vec<(&StringWrapper, &Kind)> =
+        scope.types.iter()
+            .filter(|(n,k)| pred(n,k)).collect();
     let &(name, kind) = u.choose(&kinds)?;
     let n_of_args = kind.types;
     // TODO: add lifetimes
     // TODO: fix mutability
     // TODO: pick functions
     // TODO: handle not picking ! more elegantly 
+    let mut lt_args = vec![];
+    for _ in 0..kind.lifetimes {
+        lt_args.push(Lifetime::Any);
+    }
     Ok((Type { 
         name: if name == &"!" {
             "#Unit".into()
@@ -910,14 +956,15 @@ pub fn pick_type_with_vis<'a>(ctx: &Context, u: &mut Unstructured<'a>) -> arbitr
         type_args: {
             let mut type_args: Vec<Type> = vec![];
             for _ in 0..n_of_args {
-                type_args.push(pick_type(ctx, u)?);
+                type_args.push(pick_type_that(ctx, u, pred.clone())?);
             }
             type_args
         },
-        lt_generics: vec![],
         type_generics: vec![],
-        lt_args: vec![],
-        func: None
+        lt_generics: vec![],
+        lt_args,
+        func: None,
+        is_visible: kind.is_visible
     }, kind.is_visible))
 }
 
@@ -1077,7 +1124,7 @@ fn construct_value_inner<'a>(
         let mut new_args = vec![];
         'vec_args: for arg in args {
             for (ty_name, ty) in ty_generics.iter() {
-                if arg.contains(&ty_name) {
+                if arg.contains(ty_name) {
                     // TODO: replace both in one pass?
                     new_args.push(arg.replace(&ty_name, &ty).replace_lts(&lt_generics));
                     continue 'vec_args;
@@ -1090,7 +1137,7 @@ fn construct_value_inner<'a>(
 
     fn handle_single_generic(generics: Vec<(StringWrapper, &Type)>, single: &Type) -> Type {
         for (ty_name, ty) in generics.iter() {
-            if single.contains(&ty_name) {
+            if single.contains(ty_name) {
                 return single.replace(&ty_name, &ty);
             }
         }
@@ -1253,7 +1300,8 @@ fn construct_value_inner<'a>(
         Method(&'a Method, &'a Either<Rc<Type>, TraitDescription>),
         Field(&'a Type, &'a Type, &'a StringWrapper),
         Macro(&'a StringWrapper, &'a Macro),
-        Op(&'static str, &'a Operator)
+        Op(&'static str, &'a Operator),
+        AdditionalArg
     }
     let mut possible_exprs: Vec<PossibleExpression> = vec![];
 
@@ -1306,15 +1354,10 @@ fn construct_value_inner<'a>(
             }
         }
         for (name, var) in vars {
-            let doesnt_move_reserved_vars =
-                var_handling != VarHandling::Own ||
-                ctx.is_final_stmnt || 
-                !ctx.final_stmnt_only.contains(name);
             let doesnt_break_mutability =
                 var_handling != VarHandling::MutBorrow ||
                 var.mutability == Mutability::Mutable;
-            if doesnt_move_reserved_vars &&
-                doesnt_break_mutability &&
+            if doesnt_break_mutability &&
                 var.lifetime.is_valid(ctx) &&
                 var.ty.matches(&ty) {
                 possible_exprs.push(PossibleExpression::Var(name, var));
@@ -1371,6 +1414,9 @@ fn construct_value_inner<'a>(
                     possible_exprs.push(PossibleExpression::Macro(name, macr));
                 }
             }
+        }
+        if ctx.can_demand_additional_args {
+            possible_exprs.push(PossibleExpression::AdditionalArg)
         }
     }
 
@@ -1431,7 +1477,7 @@ fn construct_value_inner<'a>(
                         // Tuples can't have their generics specified so they
                         // always have the same ambiguity on their arguments
                         // as the tuple as a whole
-                        let arg_ambigous = if name.as_str().starts_with("#Tuple") {
+                        let arg_ambigous = if name.starts_with("#Tuple") {
                             allow_ambiguity
                         } else {
                             determined_fields.as_ref().map_or(true,
@@ -1544,7 +1590,7 @@ fn construct_value_inner<'a>(
                 trait_args.iter().flat_map(|(gen,_)| {
                     method.func.args.iter().enumerate()
                         .filter_map(move |(i, arg)| {
-                            if arg.contains(&gen) {
+                            if arg.contains(gen) {
                                 Some(i)
                             } else {
                                 None
@@ -1656,7 +1702,7 @@ fn construct_value_inner<'a>(
                 (operand, None) => {
                     let ownership = match name {
                         "&" => Borrow,
-                        "& mut" => MutBorrow,
+                        "&mut" => MutBorrow,
                         _ => Own
                     };
                     let val = construct_value_inner(
@@ -1668,7 +1714,15 @@ fn construct_value_inner<'a>(
                     Ok(Expr::UnOp(name, Box::new(val)))
                 }
             }
-        }
+        },
+        PossibleExpression::AdditionalArg => Ok(Expr::AdditionalArg(
+            ty.clone(),
+            if var_handling == MutBorrow || Arbitrary::arbitrary(u)? {
+                Mutability::Mutable
+            } else {
+                Mutability::Immutable
+            }
+        ))
     }
 }
 
@@ -1677,15 +1731,17 @@ pub fn kind_to_type<S: Into<StringWrapper>>(name: S, kind: &Kind) -> Type {
         name: name.into(),
         lt_generics: GEN_STRING[0..(kind.lifetimes as usize)].iter()
                             .map(|s| (*s).into()).collect(),
+        lt_args: GEN_STRING[0..(kind.lifetimes as usize)].iter()
+                            .map(|s| Lifetime::Named((*s).into())).collect(),
         type_generics: GEN_STRING[0..(kind.types as usize)].iter()
                             .map(|s| Generic {
                                     name: (*s).into(), 
                                     is_arg_for_other: false,
                                     constraints: vec![]
                                 }).collect(),
-        lt_args: vec![],
         type_args: vec![],
-        func: None
+        func: None,
+        is_visible: kind.is_visible
     }
 }
 
@@ -1696,7 +1752,8 @@ pub fn name_to_type<S: Into<StringWrapper>>(name: S) -> Type {
         type_generics: vec![],
         lt_args: vec![],
         type_args: vec![],
-        func: None
+        func: None,
+        is_visible: false
     }
 }
 
@@ -1722,10 +1779,11 @@ macro_rules! make_type {
         type_generics: vec![],
         lt_args: vec![],
         type_args: vec![],
-        func: None
+        func: None,
+        is_visible: true
     });
     (*& $($rest:tt)*) => (crate::semantics::Type {
-        name: "#RefMut",
+        name: "#RefMut".into(),
         ..make_type!(& $($rest)*)
     });
     (& #($($ty:tt)*)) => (make_type!(& {'a} 'a $($ty)*));
@@ -1744,7 +1802,8 @@ macro_rules! make_type {
                 stringify!($lt).into()
             )],
             type_args: vec![make_type!($($ty)*)],
-            func: None
+            func: None,
+            is_visible: true
         }
     });
     (%Fn($($args:tt)*) $($ret:tt)*) =>
@@ -1770,7 +1829,8 @@ macro_rules! make_type {
                 func: Some(Box::new(Func {
                     args,
                     ret_type
-                }))
+                })),
+                is_visible: true,
             }
         }
     };
@@ -1780,7 +1840,8 @@ macro_rules! make_type {
         type_generics: vec![],
         lt_args: vec![],
         type_args: vec![],
-        func: None
+        func: None,
+        is_visible: true,
     });
     (()) => (crate::semantics::Type {
         name: "#Unit".into(),
@@ -1788,7 +1849,8 @@ macro_rules! make_type {
         type_generics: vec![],
         lt_args: vec![],
         type_args: vec![],
-        func: None
+        func: None,
+        is_visible: true
     });
     (($len:expr; $fst:expr $(,$rest:expr)*)) => (crate::semantics::Type {
         name: TUPLE_NAMES[len-1].into(),
@@ -1812,7 +1874,8 @@ macro_rules! make_type {
                 name: stringify!($name).into(),
                 lt_generics, type_generics,
                 lt_args, type_args,
-                func: None
+                func: None,
+                is_visible: true
             }
         }
     };
@@ -1921,6 +1984,16 @@ macro_rules! make_kind {
             types: $ty
         })
     };
+    (&mut) => (("#RefMut".into(), crate::semantics::Kind {
+        is_visible: true,
+        lifetimes: 1,
+        types: 1
+    }));
+    (&) => (("#Ref".into(), crate::semantics::Kind {
+        is_visible: true,
+        lifetimes: 1,
+        types: 1
+    }));
     (()) => (("#Unit".into(), crate::semantics::Kind {
         is_visible: true,
         lifetimes: 0,
@@ -2030,8 +2103,8 @@ macro_rules! parse_methods {
 
 macro_rules! parse_method_args {
     (self, $($args:tt)*) => ((Some(Own), parse_types!(;$($args)*)));
-    (& self, $($args:tt)*) => ((Some(Borrow), parse_types!(;$($args)*)));
-    (& mut self, $($args:tt)*) => ((Some(MutBorrow), parse_types!(;$($args)*)));
+    (&self, $($args:tt)*) => ((Some(Borrow), parse_types!(;$($args)*)));
+    (&mut self, $($args:tt)*) => ((Some(MutBorrow), parse_types!(;$($args)*)));
     (*& self, $($args:tt)*) => ((Some(MutBorrow) parse_types!(;$($args)*)));
     ($($args:tt)*) => ((None, parse_types!(;$($args)*)));
 }
@@ -2066,7 +2139,8 @@ macro_rules! make_struct {
                         is_arg_for_other: false
                     })).collect(),
                 type_args: vec![], //GEN_NAMES[0..len].to_vec(),
-                func: None
+                func: None,
+                is_visible: true,
             }),
             fields: Fields::Unnamed(GEN_STRING[0..len].iter().map(|name| Field {
                 visible: true,
@@ -2207,23 +2281,23 @@ pub fn prelude_scope(use_panics: bool) -> Scope {
             make_methods!(#(Vec{T}) {
                 new() -> Vec[T],
                 with_capacity(usize) -> Vec[T],
-                capacity(self) -> usize,
-                reserve(self, usize),
-                reserve_exact(self, usize),
-                shrink_to_fit(self),
+                capacity(&self) -> usize,
+                reserve(&mut self, usize),
+                reserve_exact(&mut self, usize),
+                shrink_to_fit(&mut self),
                 // into_boxed_slie(self) -> Box{[T]},
-                truncate(self, usize),
+                truncate(&mut self, usize),
                 // set_len(self, new_len),
-                swap_remove(self, usize) -> T,
-                insert(self, usize, T),
-                remove(self, usize) -> T,
+                swap_remove(&mut self, usize) -> T,
+                insert(&mut self, usize, T),
+                remove(&mut self, usize) -> T,
                 // retain{F}(self, f),
-                push(self, T),
-                pop(self) -> Option[T],
+                push(&mut self, T),
+                pop(&mut self) -> Option[T],
                 // append(self, &Vec{T})
-                len(self) -> usize,
-                is_empty(self) -> bool,
-                split_off(self, usize) -> Vec[T]
+                len(&self) -> usize,
+                is_empty(&self) -> bool,
+                split_off(&mut self, usize) -> Vec[T]
             }),
             make_methods!(#(Vec{T: (Clone)}) {
                 resize(self, usize, T),
@@ -2403,6 +2477,8 @@ pub fn primitive_scope() -> Scope {
             // make_kind!((10;)),
             // make_kind!((11;)),
             // make_kind!((12;)),
+            make_kind!(&),
+            make_kind!(&mut),
             ("!".into(), Kind { is_visible: true, lifetimes: 0, types: 0 })
         ].iter().cloned().collect(),
         lifetimes: HashMap::new(),
@@ -2423,6 +2499,16 @@ pub fn operators() -> HashMap<&'static str, Operator> {
             operands: (make_type!(T), None),
             // TODO: the lifetime should be the current scopes lifetime
             ret_type: make_type!(& %local_ref T)
+        }),
+        ("&mut", Operator {
+            type_generics: vec![Generic {
+                name: "T".into(),
+                constraints: vec![],
+                is_arg_for_other: false
+            }],
+            operands: (make_type!(T), None),
+            // TODO: the lifetime should be the current scopes lifetime
+            ret_type: make_type!(*& %local_ref T)
         }),
         ("+", Operator {
             type_generics: make_type!(add{A: (std::ops::Add)}).type_generics,
@@ -2446,54 +2532,3 @@ pub fn operators() -> HashMap<&'static str, Operator> {
         })
     ].iter().cloned().collect()
 }
-
-
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-//     #[test]
-//     fn matches_generics() {
-//         assert!(make_type!(Option{T}[T]).matches(&make_type!(Option[i32])));
-//     }
-//     #[test]
-//     fn not_matches_different_parameters() {
-//         assert!(!make_type!(Option[i32]).matches(&make_type!(Option[str])));
-//     }
-//     #[test]
-//     fn different_specificity_matches_correctly() {
-//         assert!(!make_type!(Option[i32]).matches(&make_type!(Option{T}[T])));
-//         assert!( make_type!(Option{T}[T]).matches(&make_type!(Option[i32])));
-//     }
-//     #[test]
-//     fn fn_return_type_matches() {
-//         assert!(make_type!(%Fn{T}(T) -> Box[T]).func.unwrap().ret_type.matches(&make_type!(Box[u16])));
-//     }
-//     // #[test]
-//     // fn assoc_type_generics() {
-//     //     assert!(make_methods!(#(Vec{T}) { a(), b() }).0.type_generics.len() == 1)
-//     // }
-//     #[test]
-//     fn struct_type_generics() {
-//         assert!(make_struct!(:Result:Ok[R,E](R)).1.ty.type_generics.len() == 2)
-//     }
-//     #[test]
-//     fn type_diff() {
-//         assert!(make_type!(A).diff(&make_type!(B)).next().unwrap().1.matches(&make_type!(B)));
-//         assert!(make_type!(Vec[A]).diff(&make_type!(Vec[B])).next().unwrap().1.matches(&make_type!(B)));
-//         let many_diffs_lhs = make_type!(Result[Vec[Result[A,B]],Box[C]]);
-//         let many_diffs_rhs = make_type!(Result[Vec[Result[D,E]],Box[F]]);
-//         let many_diffs = many_diffs_lhs.diff(&many_diffs_rhs).collect::<Vec<_>>();
-//         let expected = [("A".into(), make_type!(D)), ("B".into(), make_type!(E)), ("C", make_type!(F))];
-//         assert!(many_diffs.len() == 3);
-//         for (i, diff) in many_diffs.into_iter().enumerate() {
-//             // assert!(diff.0 == &expected[i].0);
-//             assert!(diff.1.matches(&expected[i].1));
-//         }
-//     }
-//     #[test]
-//     fn fits_constraints() {
-//         let constraints = &make_type!(add{A: (std::ops::Add)}[A]).type_generics[0].constraints;
-//         assert!(!make_type!(&str).fits_constraints(&Context::make_context(true), constraints));
-//     }
-// }
-// // TODO: should take trait args as well
