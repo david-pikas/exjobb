@@ -4,18 +4,30 @@ use rustc_ap_rustc_session::parse::ParseSess;
 use rustc_ap_rustc_span::{edition::Edition, FileName, source_map::FilePathMapping};
 use rustc_ap_rustc_errors::DiagnosticBuilder;
 use rustc_ap_rustc_parse::parser::Parser;
-use std::{fs, io, path::PathBuf, process::Command, str::{self, Utf8Error}};
+use std::{backtrace::Backtrace, error::Error, fmt::Display, fs, io, path::PathBuf, process::Command, str::{self, Utf8Error}};
 
 #[derive(Debug)]
 pub enum ParserError {
     Utf8(Utf8Error),
     Io(io::Error),
-    Parser(String)
+    Parser(String, Backtrace)
 }
+
+impl Display for ParserError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ParserError::Utf8(e) => e.fmt(f),
+            ParserError::Io(e) => e.fmt(f),
+            ParserError::Parser(s, bt) => write!(f, "ParserError: {}\n{}", s, bt)
+        }
+    }
+}
+
+impl Error for ParserError {}
 
 impl From<DiagnosticBuilder<'_>> for ParserError {
     fn from(e: DiagnosticBuilder) -> Self {
-        Self::Parser(format!("{:?}", e.into_diagnostic().unwrap().0))
+        Self::Parser(format!("{:?}", e.into_diagnostic().unwrap().0), Backtrace::capture())
     }
 }
 

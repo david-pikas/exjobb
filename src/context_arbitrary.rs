@@ -1,19 +1,36 @@
 use arbitrary::Arbitrary;
 pub use arbitrary::Unstructured;
-use std::marker::PhantomData;
+use std::{error::Error, fmt::Display, marker::PhantomData, backtrace::Backtrace};
 pub trait ContextArbitrary<'a, Ctx>: Sized {
     fn c_arbitrary(ctx: &mut Ctx, u: &mut Unstructured<'a>) -> Result<Self>;
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub enum GenerationError {
-    ArbitraryError(arbitrary::Error),
+    ArbitraryError(arbitrary::Error, Backtrace),
     /// If it isn't possible to produce a value of an appropriate type,
-    AppropriateTypeFailure,
+    AppropriateTypeFailure(Backtrace),
+    NoChoicesError(Backtrace)
 }
 
+impl Display for GenerationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use GenerationError::*;
+        match self {
+            ArbitraryError(e, bt) => { e.fmt(f)?; write!(f, "\n{}", bt) },
+            AppropriateTypeFailure(bt)
+                => write!(f, "Couldn't find an apropriate type {}", bt),
+            NoChoicesError(bt) => write!(f, "No choices available {}", bt),
+        }
+    }
+}
+
+impl Error for GenerationError { }
+
 impl From<arbitrary::Error> for GenerationError {
-    fn from(e: arbitrary::Error) -> Self { GenerationError::ArbitraryError(e) }
+    fn from(e: arbitrary::Error) -> Self {
+        GenerationError::ArbitraryError(e, Backtrace::capture())
+    }
 }
 
 pub type Result<T> = std::result::Result<T, GenerationError>;
@@ -35,12 +52,11 @@ pub fn unwrap_finite_f64(FiniteF64(f64): FiniteF64) -> f64 {
 
 // Verision of Unstructured::choose that doesn't borrow it's argument
 // Modified from: https://docs.rs/arbitrary/0.4.7/src/arbitrary/unstructured.rs.html#366-373
-pub fn choose_consume<'a, T, I>(u: &mut Unstructured<'a>, mut choices: I) -> arbitrary::Result<T> 
+pub fn choose_consume<'a, T, I>(u: &mut Unstructured<'a>, mut choices: I) -> Result<T> 
 where I: ExactSizeIterator<Item = T> {
-    assert!(
-        choices.len() > 0,
-        "`arbitrary::Unstructured::choose` must be given a non-empty set of choices"
-    );
+    if choices.len() == 0 {
+        return Err(GenerationError::NoChoicesError(Backtrace::capture()))
+    }
     let idx = u.int_in_range(0..=choices.len() - 1)?;
     Ok(choices.nth(idx).unwrap())
 }

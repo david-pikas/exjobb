@@ -1,4 +1,7 @@
 #![feature(once_cell)]
+#![feature(cell_update)]
+#![feature(backtrace)]
+#![feature(never_type)]
 
 #[macro_use]
 mod parser_wrapper;

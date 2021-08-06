@@ -1,3 +1,4 @@
+use std::backtrace::Backtrace;
 use std::collections::HashMap;
 use std::cell::{Cell, RefCell, RefMut};
 use std::fmt::Display;
@@ -6,8 +7,8 @@ use std::iter;
 use std::iter::FromIterator;
 use std::rc::Rc;
 use arbitrary::{Arbitrary, Unstructured};
-use crate::context_arbitrary::{GenerationError, choose_consume, c_arbitrary_iter_with_non_mut};
-use crate::context_arbitrary as context_arbitrary;
+use crate::context::fresh_lt;
+use crate::context_arbitrary::{Result, GenerationError, choose_consume, c_arbitrary_iter_with_non_mut};
 
 use super::context::Context;
 
@@ -103,8 +104,14 @@ impl Lifetime {
         }
     }
     pub fn matches_with_generics(&self, other: &Self, generics: &Vec<StringWrapper>) -> bool {
-        if other == &Lifetime::Any ||
+        use Lifetime::*;
+        if other == &Any ||
             self.name().map_or(false, |name| generics.contains(name)) {
+            return true
+        // The lifetimes then need to be constrained by eachother
+        } else if let (Anon(_), Anon(_)) = (self, other) {
+            return true
+        } else if let (Any, Anon(_)) = (self, other) {
             return true
         } else {
             return self == other
@@ -168,7 +175,7 @@ impl Display for Type {
                             self.lt_args.iter().map(|lt| match lt {
                                 Lifetime::Named(n) => n.as_str().to_string(),
                                 Lifetime::Anon(a) => format!("#anon({})", a),
-                                Lifetime::Any => "#any".to_string()
+                                Lifetime::Any => "#any".to_string(),
                             })
                         )
                         .reduce(|acc, gen| format!("{}, {}", acc, gen)).unwrap()
@@ -255,7 +262,7 @@ pub struct MacroBody {
     pub tokens: Vec<Token>,
     pub seperator: Seperator
 }
-type MacroConstructor = fn(Vec<Type>, &Context, &mut Unstructured) -> context_arbitrary::Result<MacroBody>;
+type MacroConstructor = fn(Vec<Type>, &Context, &mut Unstructured) -> Result<MacroBody>;
 pub struct Macro {
     pub constructor: MacroConstructor,
     pub ty: Type
@@ -335,17 +342,12 @@ pub struct Variable {
 }
 impl Variable {
     fn mve(&self, ctx: &Context) {
-        use Refs::*;
         end_lifetime(ctx, &self.lifetime);
-        match &*self.refs.borrow() {
-            None => {},
-            Ref(lts) => lts.iter().for_each(|lt| end_lifetime(ctx, lt)),
-            MutRef(mut_lt) => end_lifetime(ctx, mut_lt)
-        }
     }
     fn borrow(&self, ctx: &Context, lt: Lifetime) {
         self.refs.replace_with(|r| {
             use Refs::*;
+            constrain_lt(ctx, &lt, &self.lifetime);
             match r {
                 None => Ref(vec![lt]),
                 // TODO:Is there a way to do this without cloning?
@@ -360,6 +362,7 @@ impl Variable {
     fn mut_borrow(&self, ctx: &Context, lt: Lifetime) {
         self.refs.replace_with(|r| {
             use Refs::*;
+            constrain_lt(ctx, &lt, &self.lifetime);
             match r {
                 None => {}
                 Ref(lts) => lts.iter().for_each(|lt| end_lifetime(ctx, lt)),
@@ -377,8 +380,8 @@ impl Variable {
 }
 pub type VarScope = HashMap<StringWrapper, Rc<Variable>>;
 pub type TypeScope = HashMap<StringWrapper, Kind>;
-pub type LtConstraints = (Cell<bool>, Vec<Lifetime>);
-pub type LtScope = HashMap<Lifetime, LtConstraints>;
+pub type LtRefs = (Cell<bool>, RefCell<Vec<Lifetime>>);
+pub type LtScope = HashMap<Lifetime, LtRefs>;
 pub type TraitScope = HashMap<StringWrapper, Trait>;
 pub type StructScope = HashMap<StringWrapper, Rc<Struct>>;
 pub type MacroScope = HashMap<StringWrapper, Rc<Macro>>;
@@ -710,29 +713,50 @@ impl Type {
             ..self.clone()
         }
     }
+    pub fn has_lts(&self) -> bool {
+        self.sub_tys().any(|ty| ty.lt_args.len() > 0)
+    }
     pub fn needs_lt(&self) -> bool {
         self.lt_args.iter().any(|lt| lt == &Lifetime::Any) ||
         self.type_args.iter().any(|a| a.needs_lt())
     }
-    pub fn assign_lts(&self, u: &mut Unstructured, lts: &Vec<StringWrapper>) -> arbitrary::Result<Type> {
+    pub fn assign_lts<F,E>(&self, f: &mut F) -> std::result::Result<Type, E> 
+        where F: FnMut() -> std::result::Result<Lifetime, E> {
         Ok(Type {
             lt_args: self.lt_args.iter().map(|lt| {
                 if lt == &Lifetime::Any || 
                     lt.name().map_or(false, |n| self.lt_generics.contains(n)) {
-                    Ok(Lifetime::Named(u.choose(lts)?.clone()))
+                    f()
                 } else {
                     Ok(lt.clone())
                 }
-            }).collect::<arbitrary::Result<Vec<Lifetime>>>()?,
-            type_args: self.type_args.iter().map(|t| t.assign_lts(u, lts))
-                .collect::<arbitrary::Result<Vec<_>>>()?,
+            }).collect::<std::result::Result<Vec<Lifetime>, E>>()?,
+            type_args: self.type_args.iter().map(|t| t.assign_lts(f))
+                .collect::<std::result::Result<Vec<_>, E>>()?,
             ..self.clone()
         })
+    }
+    pub fn assign_lts_vec(&self, u: &mut Unstructured, lts: &Vec<Lifetime>) -> Result<Type> {
+        self.assign_lts(&mut || Ok(u.choose(lts)?.clone()))
     }
     pub fn is_sized_by(&self, name: &StringWrapper) -> bool {
         !INDIRECT_TYPES.contains(&name.as_str()) &&
         (&self.name == name
          || self.type_args.iter().any(|arg| arg.is_sized_by(name)))
+    }
+    pub fn assign_fresh_lt(&self, ctx: &Context) -> (Option<Lifetime>, Type) {
+        let mut cached_lt: Option<Lifetime> = None;
+        let ty =self.assign_lts(&mut || {
+            match &cached_lt {
+                Some(lt) => Ok::<Lifetime, !>(lt.clone()),
+                None => {
+                    let lt = fresh_lt(ctx);
+                    cached_lt = Some(lt.clone());
+                    Ok(lt)
+                }
+            }
+        }).map_or_else(|a| a, |a| a);
+        (cached_lt, ty)
     }
     pub fn fits_constraints(&self, ctx: &Context, constraints: &Vec<Constraint>) -> bool {
         // TODO: should take trait args as well
@@ -793,18 +817,34 @@ pub fn pop_scope(ctx: &mut Context) {
 
 pub fn add_lifetime(ctx: &mut Context, lt: Lifetime) {
     ctx.scopes.top_mut().map(|mut scope| {
-        scope.lifetimes.insert(lt, (Cell::new(true), vec![]));
+        scope.lifetimes.insert(lt, (Cell::new(true), RefCell::new(vec![])));
     });
 }
 
 pub fn end_lifetime(ctx: &Context, lt: &Lifetime) {
     for scope in ctx.scopes.iter() {
-        if let Some((is_valid, _)) = scope.lifetimes.get(lt) {
-            is_valid.set(false);
+        if let Some((is_valid, refs)) = scope.lifetimes.get(lt) {
+            if is_valid.get() {
+                is_valid.set(false);
+                for rf in refs.borrow().iter() {
+                    end_lifetime(ctx, rf);
+                }
+            }
             return;
         }
     }
     // panic!("Attemted to remove lifetime {:?}, but it couldn't be found", lt);
+}
+
+#[allow(dead_code)]
+pub fn constrain_lt(ctx: &Context, lt: &Lifetime, constraint: &Lifetime) {
+    if lt != &Lifetime::Any {
+        for scope in ctx.scopes.iter() {
+            if let Some((_, refs)) = scope.lifetimes.get(constraint) {
+                refs.borrow_mut().push(lt.clone());
+            }
+        }
+    }
 }
 
 // macro_rules! with_scope {
@@ -884,7 +924,7 @@ pub fn pick_var_that<'a, 'b, F>(
     ctx: &'b mut Context,
     u: &'b mut Unstructured<'a>,
     pred: F
-) -> context_arbitrary::Result<(&'b StringWrapper, &'b Variable)>
+) -> Result<(&'b StringWrapper, &'b Variable)>
 where F: Fn(&StringWrapper, &Variable) -> bool {
     let scope = choose_consume(u, ctx.scopes.sized_iter())?;
     let vars: Vec<(&StringWrapper, &Rc<Variable>)> = scope.vars.iter().filter_map(|(n,var)| {
@@ -895,7 +935,7 @@ where F: Fn(&StringWrapper, &Variable) -> bool {
         }
     }).collect();
     if vars.is_empty() {
-        Err(GenerationError::AppropriateTypeFailure)
+        Err(GenerationError::AppropriateTypeFailure(Backtrace::capture()))
     } else {
         let &(name, var) = u.choose(&vars)?;
         Ok((name, var))
@@ -906,36 +946,21 @@ where F: Fn(&StringWrapper, &Variable) -> bool {
 pub fn pick_var<'a, 'b>(
     ctx: &'b mut Context,
     u: &'b mut Unstructured<'a>,
-) -> context_arbitrary::Result<(&'b StringWrapper, &'b Variable)> {
+) -> Result<(&'b StringWrapper, &'b Variable)> {
     pick_var_that(ctx, u, |_,_| true)
 }
 
 
 #[allow(dead_code)]
-pub fn pick_type<'a>(ctx: &Context, u: &mut Unstructured<'a>) -> arbitrary::Result<Type> {
-    Ok(pick_type_with_vis(ctx, u)?.0)
-}
-
-pub fn pick_type_with_vis<'a>(ctx: &Context, u: &mut Unstructured<'a>) -> arbitrary::Result<(Type, bool)> {
-    pick_type_with_vis_that(ctx, u, |_,_| true)
+pub fn pick_type<'a>(ctx: &Context, u: &mut Unstructured<'a>) -> Result<Type> {
+    Ok(pick_type_that(ctx, u, |_,_| true)?)
 }
 
 pub fn pick_type_that<'a, F>(ctx: &Context, u: &mut Unstructured<'a>, pred: F)
-    -> arbitrary::Result<Type> where F: Fn(&StringWrapper, &Kind) -> bool + Clone {
-    Ok(pick_type_with_vis_that(ctx, u, pred)?.0)
-}
-
-pub fn pick_type_with_vis_that<'a, F>(
-    ctx: &Context,
-    u: &mut Unstructured<'a>,
-    pred: F
-) -> arbitrary::Result<(Type, bool)> 
+     -> Result<Type> 
 where F: Fn(&StringWrapper, &Kind) -> bool + Clone {
-    let non_empty_scopes: Vec<&Scope> =
-        ctx.scopes.iter().filter(|s| !s.types.is_empty()).collect();
-    let scope: &Scope = choose_consume(u, non_empty_scopes.into_iter())?;
     let kinds: Vec<(&StringWrapper, &Kind)> =
-        scope.types.iter()
+        ctx.scopes.iter().flat_map(|s| s.types.iter())
             .filter(|(n,k)| pred(n,k)).collect();
     let &(name, kind) = u.choose(&kinds)?;
     let n_of_args = kind.types;
@@ -947,7 +972,7 @@ where F: Fn(&StringWrapper, &Kind) -> bool + Clone {
     for _ in 0..kind.lifetimes {
         lt_args.push(Lifetime::Any);
     }
-    Ok((Type { 
+    Ok(Type { 
         name: if name == &"!" {
             "#Unit".into()
         } else {
@@ -965,10 +990,10 @@ where F: Fn(&StringWrapper, &Kind) -> bool + Clone {
         lt_args,
         func: None,
         is_visible: kind.is_visible
-    }, kind.is_visible))
+    })
 }
 
-pub fn pick_type_impl<'a>(ctx: &'a Context, u: &mut Unstructured, desc: &TraitDescription) -> arbitrary::Result<(&'a TraitArgs, &'a Type)> {
+pub fn pick_type_impl<'a>(ctx: &'a Context, u: &mut Unstructured, desc: &TraitDescription) -> Result<(&'a TraitArgs, &'a Type)> {
     for scope in ctx.scopes.iter() {
         for (name, trai) in scope.traits.iter() {
             if name == &desc.name {
@@ -980,7 +1005,7 @@ pub fn pick_type_impl<'a>(ctx: &'a Context, u: &mut Unstructured, desc: &TraitDe
     panic!("Couldn't find trait {}", desc.name.as_str());
 }
 
-pub fn pick_type_impls(ctx: &Context, u: &mut Unstructured, constraints: &Vec<Constraint>) -> arbitrary::Result<Type> {
+pub fn pick_type_impls(ctx: &Context, u: &mut Unstructured, constraints: &Vec<Constraint>) -> Result<Type> {
     Ok(pick_type_impls_interconnected(ctx, u, constraints, &vec![])?.0)
 }
 
@@ -988,7 +1013,7 @@ pub fn pick_type_impls_interconnected<'a>(
         ctx: &'a Context, u: &mut Unstructured,
         constraints: &'a Vec<Constraint>,
         determined_by_others: &Generics
-    ) -> arbitrary::Result<(Type, Vec<(StringWrapper, &'a Type)>)> {
+    ) -> Result<(Type, Vec<(StringWrapper, &'a Type)>)> {
     
     if constraints.is_empty() {
         return Ok((pick_type(ctx, u)?, vec![]));
@@ -1054,7 +1079,7 @@ pub fn pick_type_impls_interconnected<'a>(
     let ty_args = ty.type_generics.clone().into_iter()
         .filter(|gen| ty.contains(&gen.name))
         .map(|gen| Ok((gen.name.clone(), pick_type_impls(ctx, u, &gen.constraints)?)))
-        .collect::<arbitrary::Result<Vec<_>>>()?;
+        .collect::<Result<Vec<_>>>()?;
     // TODO: replace generics in inter too
     let ty_with_args = ty_args.into_iter().fold(ty, |acc, ty_arg| {
         let (gen_name, arg) = ty_arg;
@@ -1064,11 +1089,28 @@ pub fn pick_type_impls_interconnected<'a>(
     return Ok((ty_with_args, inter.collect()))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum VarHandling {
-    Borrow,
-    MutBorrow,
+    Borrow(Lifetime),
+    MutBorrow(Lifetime),
     Own
+}
+impl VarHandling {
+    #[allow(dead_code)]
+    fn is_borrow(&self) -> bool {
+        if let Borrow(_) = self {
+            true
+        } else {
+            false
+        }
+    }
+    fn is_mut_borrow(&self) -> bool {
+        if let MutBorrow(_) = self {
+            true
+        } else {
+            false
+        }
+    }
 }
 use VarHandling::*;
 
@@ -1077,7 +1119,7 @@ pub fn construct_value<'a>(
     u: &mut Unstructured<'a>,
     ty: Type,
     allow_ambiguity: bool
-) -> context_arbitrary::Result<Expr> {
+) -> Result<Expr> {
     ctx.size.set(0);
     construct_value_inner(ctx, u, ty, allow_ambiguity, Own)
 }
@@ -1090,7 +1132,7 @@ fn construct_value_inner<'a>(
     ty: Type,
     allow_ambiguity: bool,
     var_handling: VarHandling
-) -> context_arbitrary::Result<Expr> {
+) -> Result<Expr> {
 
     // println!("construct_value called on type {}", ty);
 
@@ -1167,7 +1209,7 @@ fn construct_value_inner<'a>(
         ty1: &Type, ty2: &Type, 
         args: &Vec<Type>,
         type_generics: &Generics, type_args: &Vec<Type>,
-    ) -> arbitrary::Result<(Option<Vec<usize>>, Vec<Type>)> {
+    ) -> Result<(Option<Vec<usize>>, Vec<Type>)> {
     //! The output type is perhaps a bit counter-intuitive,
     //! (None, tys) means that the function *should* be given
     //! type parameters and that all arguments can be ambigous
@@ -1234,7 +1276,7 @@ fn construct_value_inner<'a>(
         allow_ambiguity: bool,
         ty: &Type, 
         fields: Vec<&Type>,
-    ) -> arbitrary::Result<Option<Vec<usize>>> {
+    ) -> Result<Option<Vec<usize>>> {
     //! Similar to make_fn_generics, but much less complicated because the output type
     //! always has the same generics as the struct unlike functions
     
@@ -1267,7 +1309,7 @@ fn construct_value_inner<'a>(
         ctx: &'a Context, u: &mut Unstructured,
         full_generics: &'a Generics,
         so_far: &Vec<(StringWrapper, &Type)>
-    ) -> arbitrary::Result<Vec<(StringWrapper, Either<Type, &'a Type>)>> {
+    ) -> Result<Vec<(StringWrapper, Either<Type, &'a Type>)>> {
         let mut result = vec![];
         let so_far_names: Vec<&StringWrapper> = so_far.iter().map(|(name,_)| name).collect();
         let free_generics: Vec<&Generic> = full_generics.iter()
@@ -1355,7 +1397,7 @@ fn construct_value_inner<'a>(
         }
         for (name, var) in vars {
             let doesnt_break_mutability =
-                var_handling != VarHandling::MutBorrow ||
+                !var_handling.is_mut_borrow() ||
                 var.mutability == Mutability::Mutable;
             if doesnt_break_mutability &&
                 var.lifetime.is_valid(ctx) &&
@@ -1393,9 +1435,6 @@ fn construct_value_inner<'a>(
         }
         for (struc_ty, field_ty, name) in fields {
             if let Some(constraints) = field_ty.is_generic_with(&struc_ty.type_generics) {
-                // To prevent the output being flooded by tuples,
-                // since getting an argument from a generic tuple
-                // works for every type
                 if !constraints.is_empty() &&
                     ty.fits_constraints(ctx, constraints) {
                     possible_exprs.push(PossibleExpression::Field(struc_ty, field_ty, name))
@@ -1415,7 +1454,7 @@ fn construct_value_inner<'a>(
                 }
             }
         }
-        if ctx.can_demand_additional_args {
+        if ctx.can_demand_additional_args && ty.has_lts() {
             possible_exprs.push(PossibleExpression::AdditionalArg)
         }
     }
@@ -1502,8 +1541,8 @@ fn construct_value_inner<'a>(
         PossibleExpression::Var(name, var) => {
             match var_handling {
                 Own => var.mve(ctx),
-                Borrow => var.borrow(ctx, Lifetime::Anon(ctx.lifetime)),
-                MutBorrow => var.mut_borrow(ctx, Lifetime::Anon(ctx.lifetime))
+                Borrow(lt) => var.borrow(ctx, lt),
+                MutBorrow(lt) => var.mut_borrow(ctx, lt)
             }
             Ok(Expr::Var(name.to_owned()))
         }
@@ -1641,12 +1680,12 @@ fn construct_value_inner<'a>(
             } else {
                 vec![]
             };
-            if let Some(ownership) = method.self_param {
+            if let Some(ownership) = &method.self_param {
                 Ok(Expr::Method(
                     Box::new(construct_value_inner(ctx, u, Type {
                         type_args: disc_ty_args,
                         ..assoc_ty.clone()
-                    }, false, ownership)?),
+                    }, false, ownership.clone())?),
                     method.name.clone(), 
                     given_ty_args,
                     args
@@ -1701,23 +1740,31 @@ fn construct_value_inner<'a>(
                 }
                 (operand, None) => {
                     let ownership = match name {
-                        "&" => Borrow,
-                        "&mut" => MutBorrow,
+                        "&" => Borrow(fresh_lt(ctx)),
+                        "&mut" => MutBorrow(fresh_lt(ctx)),
                         _ => Own
                     };
                     let val = construct_value_inner(
                         ctx, u,
                         handle_single_generic(generics, operand),
                         allow_ambiguity,
-                        ownership
+                        ownership.clone()
                     )?;
+                    if let Some(lt) = match ownership {
+                        Borrow(lt) => Some(lt),
+                        MutBorrow(lt) => Some(lt),
+                        _ => None
+                    } {
+                        constrain_lt(ctx, &lt, &ty.lt_args[0]);
+                        constrain_lt(ctx, &ty.lt_args[0], &lt);
+                    }
                     Ok(Expr::UnOp(name, Box::new(val)))
                 }
             }
         },
         PossibleExpression::AdditionalArg => Ok(Expr::AdditionalArg(
             ty.clone(),
-            if var_handling == MutBorrow || Arbitrary::arbitrary(u)? {
+            if var_handling.is_mut_borrow() || Arbitrary::arbitrary(u)? {
                 Mutability::Mutable
             } else {
                 Mutability::Immutable
@@ -1790,7 +1837,7 @@ macro_rules! make_type {
     (& $name:ident $($rest:tt)*) => (make_type!(& {'a} 'a $name $($rest)*));
     (& $lt:lifetime $($rest:tt)*) => (make_type!(& {} $lt $($rest)*));
     (& %local_ref $($rest:tt)*) => (crate::semantics::Type {
-        lt_args: vec![crate::semantics::Lifetime::Named("%local_ref".into())],
+        lt_args: vec![crate::semantics::Lifetime::Any],
         ..make_type!(& 'local_ref $($rest)*)
     });
     (& {$($gen:tt)*} $lt:lifetime $($ty:tt)*) => ({
@@ -2103,9 +2150,9 @@ macro_rules! parse_methods {
 
 macro_rules! parse_method_args {
     (self, $($args:tt)*) => ((Some(Own), parse_types!(;$($args)*)));
-    (&self, $($args:tt)*) => ((Some(Borrow), parse_types!(;$($args)*)));
-    (&mut self, $($args:tt)*) => ((Some(MutBorrow), parse_types!(;$($args)*)));
-    (*& self, $($args:tt)*) => ((Some(MutBorrow) parse_types!(;$($args)*)));
+    (&self, $($args:tt)*) => ((Some(Borrow(Lifetime::Any)), parse_types!(;$($args)*)));
+    (&mut self, $($args:tt)*) => ((Some(MutBorrow(Lifetime::Any)), parse_types!(;$($args)*)));
+    (*& self, $($args:tt)*) => ((Some(MutBorrow(Lifetime::Any)) parse_types!(;$($args)*)));
     ($($args:tt)*) => ((None, parse_types!(;$($args)*)));
 }
 
@@ -2285,7 +2332,7 @@ pub fn prelude_scope(use_panics: bool) -> Scope {
                 reserve(&mut self, usize),
                 reserve_exact(&mut self, usize),
                 shrink_to_fit(&mut self),
-                // into_boxed_slie(self) -> Box{[T]},
+                // into_boxed_slice(self) -> Box{[T]},
                 truncate(&mut self, usize),
                 // set_len(self, new_len),
                 swap_remove(&mut self, usize) -> T,
@@ -2300,7 +2347,7 @@ pub fn prelude_scope(use_panics: bool) -> Scope {
                 split_off(&mut self, usize) -> Vec[T]
             }),
             make_methods!(#(Vec{T: (Clone)}) {
-                resize(self, usize, T),
+                resize(&mut self, usize, T),
             }),
             make_methods!(std::io::Error {
                 new{E: (IntoError)}(std::io::ErrorKind, E) -> std::io::Error
@@ -2389,7 +2436,7 @@ pub fn prelude_scope(use_panics: bool) -> Scope {
                         },
                         tokens: c_arbitrary_iter_with_non_mut(ctx, u, |ctx, u| {
                             Ok(Token::Expr(construct_value_inner(ctx, u, ty_args[0].clone(), true, Own)?))
-                        }).collect::<context_arbitrary::Result<Vec<Token>>>()?,
+                        }).collect::<Result<Vec<Token>>>()?,
                         seperator: Seperator::Comma
                     })
                 })),
