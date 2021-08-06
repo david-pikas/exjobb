@@ -21,11 +21,19 @@ mod context_arbitrary;
 use context_arbitrary::GenerationError;
 
 #[macro_use]
+mod choose;
+
+#[macro_use]
 mod context;
 use context::{Options, Context};
 
 #[macro_use]
 mod semantics;
+
+mod scopes;
+
+#[macro_use]
+mod ty_macros;
 
 mod syn_arbitrary;
 use syn_arbitrary::make_wrapped_file;
