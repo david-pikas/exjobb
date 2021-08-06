@@ -54,7 +54,7 @@ pub struct Context {
     /// (Semantics only) The expected type of the current expression
     pub expected_type: semantics::Type,
     /// (Semantics only) the lifetime of the current expression
-    pub lifetime: usize,
+    pub lifetime: Cell<usize>,
     /// (Semantics only) does the file have a main function?
     pub has_main: bool,
     /// (Semantics only) are non ascii identifiers allowed?
@@ -129,7 +129,7 @@ impl Context {
             needs_new_scope: true,
             expected_type: crate::make_type!(()),
             has_main: true,
-            lifetime: 0,
+            lifetime: Cell::new(0),
             non_ascii: false,
             is_const: false,
             no_generics: false,
@@ -145,9 +145,9 @@ impl Context {
     }
 }
 
-pub fn fresh_lt(ctx: &mut Context) -> Lifetime {
-    let result = Lifetime::Anon(ctx.lifetime);
-    ctx.lifetime += 1;
+pub fn fresh_lt(ctx: &Context) -> Lifetime {
+    let result = Lifetime::Anon(ctx.lifetime.get());
+    ctx.lifetime.update(|n| n + 1);
     return result;
 }
 

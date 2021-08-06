@@ -1,9 +1,14 @@
 #![feature(once_cell)]
+#![feature(cell_update)]
+#![feature(backtrace)]
+#![feature(never_type)]
 
 use arbitrary::Unstructured;
 use quote::quote;
 use rand::{distributions, prelude::Distribution, thread_rng, Rng};
 use std::env::Args;
+use std::error::Error;
+use std::fmt::Display;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::{env, fs, thread, io::Read};
@@ -49,10 +54,17 @@ fn main() -> Result<(), MainError> {
     while !is_interrupeted.load(Ordering::SeqCst) && match flags.repeat {
         Repeat::N(n) => n > count,
         Repeat::Forever => true,
-        Repeat::FirstError => 1 > errors,
+        Repeat::FirstError => errors < 1
     } {
         count += 1;
-        let ast = gen_code(flags.clone().into())?;
+        let ast = match gen_code(flags.clone().into()) {
+            Ok(r) => r,
+            Err(e) => {
+                println!("Error: {}", e);
+                errors += 1;
+                continue;
+            }
+        };
         let ast_string = format!("{:#?}", ast);
         fs::write(ast_filename, &ast_string).expect("Failed writing file");
         let code_str = quote!(#ast).to_string();
@@ -97,6 +109,17 @@ enum MainError {
     GenError(context_arbitrary::GenerationError),
     ParserError(parser_wrapper::ParserError)
 }
+
+impl Display for MainError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MainError::GenError(e) => e.fmt(f),
+            MainError::ParserError(e) => e.fmt(f),
+        }
+    }
+}
+
+impl Error for MainError {}
 
 impl From<context_arbitrary::GenerationError> for MainError {
     fn from(e: context_arbitrary::GenerationError) -> Self {
