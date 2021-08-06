@@ -15,6 +15,7 @@ use super::context::*;
 use super::semantics as sem;
 use super::semantics::*;
 
+use crate::make_type;
 
 
 const MAX_DEPTH: usize = 20;

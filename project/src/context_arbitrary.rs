@@ -50,17 +50,6 @@ pub fn unwrap_finite_f64(FiniteF64(f64): FiniteF64) -> f64 {
     f64
 }
 
-// Verision of Unstructured::choose that doesn't borrow it's argument
-// Modified from: https://docs.rs/arbitrary/0.4.7/src/arbitrary/unstructured.rs.html#366-373
-pub fn choose_consume<'a, T, I>(u: &mut Unstructured<'a>, mut choices: I) -> Result<T> 
-where I: ExactSizeIterator<Item = T> {
-    if choices.len() == 0 {
-        return Err(GenerationError::NoChoicesError(Backtrace::capture()))
-    }
-    let idx = u.int_in_range(0..=choices.len() - 1)?;
-    Ok(choices.nth(idx).unwrap())
-}
-
 pub struct ContextArbitraryIter<'a, 'b, 'c, 'd, El, Ctx> {
     gen: Box<dyn FnMut(&mut Ctx, &mut Unstructured<'a>) -> Result<El> + 'd>,
     u: &'b mut Unstructured<'a>,

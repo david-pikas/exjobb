@@ -2,10 +2,10 @@ use std::collections::HashMap;
 use std::cell::{RefCell, Cell};
 use std::rc::Rc;
 
-use crate::semantics;
 use crate::semantics::Lifetime;
 
-use super::semantics::{Stack, Scope, Operator, prelude_scope, operators, primitive_scope};
+use crate::semantics::{self, Stack, Scope, Operator};
+use crate::scopes::*;
 
 
 pub struct Options {
