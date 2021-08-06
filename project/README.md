@@ -18,16 +18,17 @@ cargo run -- --help
 
 Can generate a fair amount of syntactically correct programs.
 
-Two potential syntactically bugs have been found, namely `./interesting_cases/break_labled_block_minimal.rs` and `./interesting_cases/half_open_ranges.rs`.
+The program is able to correctly handle types and ownership. The main remaining class of illegal programs being generated is due to the program not handling multiple things having the same name properly. For example, it might generate function signatures with multiple parameters named the same thing (which is illegal). It might also attempt to reference a variable somewhere else that has been shadowed by another variable. Stack overflows also happen occasionally when generating programs. Both of these things happen about once or twice every 10 000 programs
 
-Only simpler syntactically valid programs can be generated. These programs sometimes fail to compile because rust is unable to infer correct types, for example programs containing the following: `drop(None)`. Another common way for programs to fail is that they contain types who's size can't be determined at runtime, e.g. recursive types
+An (incomplete) list of missing language features:
+    * If/else and match
+    * loops
+    * type synonyms
+    * modules and `use`
+    * unsafe code
+        - unions
+        - pointers
+    * Generics for structs
+    * Early returns from functions
+    * Blocks, if/else and so on in the middle of expressions
 
-The programs tend to not use ownership in any interesting way and thus tends to pass the borrow checker, it should be theoretically possible (although I have not seen it) to generate programs that do not pass the borrow checker such as:
-
-```rust
-fn main() {
-    let a = String::new();
-    drop(a);
-    drop(a);
-}
-```
