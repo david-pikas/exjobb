@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::cell::{RefCell, Cell};
 use std::rc::Rc;
+use std::env;
 
 use crate::semantics::Lifetime;
 
@@ -12,6 +13,20 @@ pub struct Options {
     pub use_semantics: bool,
     pub use_panics: bool,
     pub print_vars: bool,
+}
+impl Options {
+    pub fn export_env(&self) {
+        env::set_var("RUSTSMITH_USE_SEMANTICS", u8::from(self.use_semantics).to_string());
+        env::set_var("RUSTSMITH_USE_PANICS", u8::from(self.use_panics).to_string());
+        env::set_var("RUSTSMITH_PRINT_VARS", u8::from(self.print_vars).to_string());
+    }
+    pub fn import_env() -> Self {
+        Options {
+            use_semantics: env::var("RUSTSMITH_USE_SEMANTICS") == Ok("1".to_string()),
+            use_panics:    env::var("RUSTSMITH_USE_PANICS") == Ok("1".to_string()),
+            print_vars:    env::var("RUSTSMITH_PRINT_VARS") == Ok("1".to_string()),
+        }
+    }
 }
 pub struct Context {
     /// Options passed from the command line
