@@ -1069,7 +1069,6 @@ pub fn pick_type_impls_interconnected<'a>(
                 values_iter.try_fold((first.as_ref().clone(), f_iter),
                     |(acc_ty, acc_iter), (v_ty, v_iter)|
                         -> Option<(Type, InterIter)> {
-                        println!("Merging");
                         Some((acc_ty.merge(v_ty.as_ref().clone())?,
                              Box::new(acc_iter.into_iter().chain(v_iter))))
                     }

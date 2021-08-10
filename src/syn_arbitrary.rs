@@ -22,6 +22,7 @@ const MAX_DEPTH: usize = 20;
 
 pub struct WrappedFile(pub File);
 unsafe impl Send for WrappedFile {}
+#[allow(dead_code)]
 pub fn make_wrapped_file<'a>(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<WrappedFile> {
     Ok(WrappedFile(c_arbitrary(ctx, u)?))
 }
@@ -41,69 +42,6 @@ macro_rules! lit_of_type {
         let l: $ty = Arbitrary::arbitrary($u)?;
         parse_quote!(#l)
     })
-}
-
-macro_rules! guarded_lazy_choose {
-    ($u:ident, { $($guard:expr => $choice:expr),*$(,)? }) => {
-        (|| {
-            let mut len = 0;
-            let mut conds = vec![];
-            $( 
-                conds.push($guard);
-                if *conds.last().unwrap() {
-                    len += 1;
-                }
-            )*
-            let choice = $u.int_in_range(0..=(len-1))?;
-            let mut clause = 0;
-            let mut i = 0;
-            $(
-                if conds[i] && choice == clause {
-                    return Ok($choice); 
-                }
-                if conds[i] {
-                    clause += 1;
-                }
-                i += 1;
-            )*
-            // purely to supress warnings about the variables being set but never read
-            std::mem::drop(clause);
-            std::mem::drop(i);
-            return Err(GenerationError::NoChoicesError(Backtrace::capture()))
-        })()
-    };
-}
-
-macro_rules! weighted_lazy_choose {
-    ($u:ident, { $($weight:expr => $choice:expr),*$(,)? }) => {
-        (|| {
-            let mut ranges = vec![];
-            let mut sum = 0;
-
-            $({
-                let old_sum = sum;
-                sum += $weight;
-                ranges.push(old_sum..sum)
-            })*
-
-            let num = $u.int_in_range(0..=sum-1)?;
-
-            let mut i = 0;
-            $(
-                if ranges[i].contains(&num) {
-                    return Ok($choice);
-                }
-                i += 1;
-            )*
-            std::mem::drop(i);
-            return Err(GenerationError::NoChoicesError(Backtrace::capture()))
-        })()
-    }
-}
-
-macro_rules! lazy_choose {
-    ($u:ident, { $($choice:expr),*$(,)? })
-    => (guarded_lazy_choose!($u, { $(true => $choice),*}))
 }
 
 macro_rules! parens_ex {
@@ -578,7 +516,7 @@ fn from_sem_expr(ctx: &Context, u: &mut Unstructured, ex: &sem::Expr) -> Result<
                         span: dummy_span()
                     })
             );
-            println!("Field access!");
+            // println!("Field access!");
             syn::Expr::Field(ExprField {
                 attrs: vec![],
                 base: Box::new(parenthesize_expr(16, from_sem_expr(ctx, u, reciever)?)),

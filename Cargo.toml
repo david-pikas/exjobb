@@ -3,6 +3,7 @@ name = "rustsmith"
 version = "0.1.0"
 authors = ["David Pikas <david@pikas.se>"]
 edition = "2018"
+default-run = "rustsmith"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -24,7 +25,16 @@ scoped-tls = "1.0"
 quote = "1.0"
 rand = "0.8"
 lazy_static = "1.4"
+subprocess = "0.2"
 
 # for profiling
 [profile.release]
 debug = true
+
+[[bin]]
+name = "rustsmith"
+path = "src/main.rs"
+
+[[bin]]
+name = "generate-program"
+path = "src/generate_program.rs"

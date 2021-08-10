@@ -831,6 +831,7 @@ dependencies = [
  "rustc-ap-rustc_session",
  "rustc-ap-rustc_span",
  "scoped-tls",
+ "subprocess",
  "syn",
 ]
 
@@ -894,6 +895,16 @@ dependencies = [
  "cfg-if 1.0.0",
  "libc",
  "psm",
+ "winapi",
+]
+
+[[package]]
+name = "subprocess"
+version = "0.2.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "334b801f9ca2529ba9605109f1d2835f15aff94cd6cfe5afe6ce8cf71e5fd3c4"
+dependencies = [
+ "libc",
  "winapi",
 ]
 

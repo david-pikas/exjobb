@@ -3,29 +3,29 @@
 #![feature(backtrace)]
 #![feature(never_type)]
 
-use arbitrary::Unstructured;
-use quote::quote;
-use rand::{distributions, prelude::Distribution, thread_rng, Rng};
 use std::env::Args;
 use std::error::Error;
 use std::fmt::Display;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::{env, fs, thread, io::Read};
+use std::{env, fs, io::Read};
+use std::path::Path;
+
+use rand::{distributions, prelude::Distribution, thread_rng, Rng};
+use subprocess::{Popen, PopenConfig, Redirection};
 
 mod parser_wrapper;
 use parser_wrapper::parse;
 
 #[macro_use]
 mod context_arbitrary;
-use context_arbitrary::GenerationError;
 
 #[macro_use]
 mod choose;
 
 #[macro_use]
 mod context;
-use context::{Options, Context};
+use context::Options;
 
 #[macro_use]
 mod semantics;
@@ -35,17 +35,23 @@ mod scopes;
 #[macro_use]
 mod ty_macros;
 
-mod syn_arbitrary;
-use syn_arbitrary::make_wrapped_file;
+mod generate_program;
 
-use crate::syn_arbitrary::WrappedFile;
+mod syn_arbitrary;
 
 fn main() -> Result<(), MainError> {
+
+    let mut args = env::args();
+    let program_name = args.next().unwrap();
+    let program_path = Path::new(&program_name);
+    let program_dir = program_path.parent().unwrap();
+    let dir_str = program_dir.to_str().unwrap();
 
     let flags = parse_args(env::args());
     if flags.exit_imediately {
         return Ok(())
     }
+    Options::from(flags.clone()).export_env();
 
     let ast_filename = "./output_files/ast.rs";
     let filename = "./output_files/generated_code.rs";
@@ -65,18 +71,27 @@ fn main() -> Result<(), MainError> {
         Repeat::FirstError => errors < 1
     } {
         count += 1;
-        let ast = match gen_code(flags.clone().into()) {
-            Ok(r) => r,
-            Err(e) => {
-                println!("Error: {}", e);
-                errors += 1;
-                continue;
+        let mut rng = thread_rng();
+        let len = rng.gen_range(1000000..10000000);
+        let data: Vec<u8> = distributions::Standard
+            .sample_iter(&mut rng)
+            .take(len)
+            .collect();
+        let mut program_generator = Popen::create(
+            &[format!("{}/generate-program", dir_str), filename.to_string()], PopenConfig {
+                stdin: Redirection::Pipe,
+                stdout: Redirection::Pipe,
+                ..Default::default()
             }
-        };
-        let ast_string = format!("{:#?}", ast);
-        fs::write(ast_filename, &ast_string).expect("Failed writing file");
-        let code_str = quote!(#ast).to_string();
-        fs::write(filename, &code_str).expect("Failed writing file");
+        )?;
+        let (m_program_code, m_error) = program_generator.communicate_bytes(Some(&data))?;
+        if let Some(err) = m_error {
+            eprintln!("{}", String::from_utf8(err).unwrap());
+            errors += 1;
+            continue;
+        } else if let Some(print_stmnts) = m_program_code {
+            print!("{}", String::from_utf8(print_stmnts).unwrap());
+        }
         let mut output;
         if flags.use_semantics {
             output = parser_wrapper::compile(filename)?;
@@ -102,27 +117,22 @@ fn main() -> Result<(), MainError> {
     return Ok(())
 }
 
-fn with_stack_space_of<T, F>(stack_space: usize, closure: F) -> T
-where
-    F: FnOnce() -> T + 'static + Send,
-    T: 'static + Send,
-{
-    let builder = thread::Builder::new().stack_size(stack_space);
-    let handler = builder.spawn(closure).unwrap();
-    return handler.join().unwrap();
-}
-
 #[derive(Debug)]
 enum MainError {
     GenError(context_arbitrary::GenerationError),
-    ParserError(parser_wrapper::ParserError)
+    ParserError(parser_wrapper::ParserError),
+    SubProcError(subprocess::PopenError),
+    IoError(std::io::Error)
 }
 
 impl Display for MainError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use MainError::*;
         match self {
-            MainError::GenError(e) => e.fmt(f),
-            MainError::ParserError(e) => e.fmt(f),
+            GenError(e) => e.fmt(f),
+            ParserError(e) => e.fmt(f),
+            SubProcError(e) => e.fmt(f),
+            IoError(e) => e.fmt(f)
         }
     }
 }
@@ -138,6 +148,18 @@ impl From<context_arbitrary::GenerationError> for MainError {
 impl From<parser_wrapper::ParserError> for MainError {
     fn from(e: parser_wrapper::ParserError) -> Self {
         MainError::ParserError(e)
+    }
+}
+
+impl From<subprocess::PopenError> for MainError {
+    fn from(e: subprocess::PopenError) -> Self {
+        MainError::SubProcError(e)
+    }
+}
+
+impl From<std::io::Error> for MainError {
+    fn from(e: std::io::Error) -> Self {
+        MainError::IoError(e)
     }
 }
 
@@ -226,20 +248,4 @@ fn parse_args(mut args: Args) -> Flags {
         
     }
     return flags;
-}
-
-fn gen_code(options: Options) -> Result<syn::File, GenerationError> {
-    let WrappedFile(ast): syn_arbitrary::WrappedFile =
-        with_stack_space_of(64 * 1024 * 1024, move || {
-            let mut rng = thread_rng();
-            let len = rng.gen_range(1000000..10000000);
-            let data: Vec<u8> = distributions::Standard
-                .sample_iter(&mut rng)
-                .take(len)
-                .collect();
-            let mut u = Unstructured::new(&data);
-            let mut ctx = Context::make_context(options);
-            make_wrapped_file(&mut ctx, &mut u)
-        })?;
-    return Ok(ast);
 }
