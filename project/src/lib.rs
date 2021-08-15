@@ -5,6 +5,7 @@
 
 #[macro_use]
 pub mod parser_wrapper;
+
 pub use parser_wrapper::parse;
 
 #[macro_use]
@@ -20,10 +21,15 @@ pub use context::Context;
 #[macro_use]
 mod semantics;
 
+mod string_wrapper;
+
 mod scopes;
 
 mod ty_macros;
 pub mod syn_arbitrary;
+
+#[macro_use]
+mod branching;
 
 pub use syn_arbitrary::make_wrapped_file;
 pub use context_arbitrary::*;

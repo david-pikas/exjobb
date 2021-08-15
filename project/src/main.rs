@@ -35,9 +35,14 @@ mod scopes;
 #[macro_use]
 mod ty_macros;
 
+mod string_wrapper;
+
 mod generate_program;
 
 mod syn_arbitrary;
+
+#[macro_use]
+mod branching;
 
 fn main() -> Result<(), MainError> {
 

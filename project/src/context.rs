@@ -3,10 +3,9 @@ use std::cell::{RefCell, Cell};
 use std::rc::Rc;
 use std::env;
 
-use crate::semantics::Lifetime;
-
-use crate::semantics::{self, Stack, Scope, Operator};
+use crate::semantics::{self, Stack, Scope, Operator, Lifetime};
 use crate::scopes::*;
+use crate::branching::Branches;
 
 
 pub struct Options {
@@ -104,6 +103,10 @@ pub struct Context {
     /// set by the children of a recursive call back to their parent so that if
     /// one sibling is very large, other siblings have to be smaller etc.
     pub size: Cell<usize>,
+    /// (Semantics only): The extra data required to keep track of branches. If not None,
+    /// anytime a lifetime or the references a var has are changed we have to make sure 
+    /// that the original value is saved so that it is possible to restore for other branches
+    pub branches: Option<RefCell<Branches>>
 }
 impl Context {
     pub fn make_context(options: Options) -> Context {
@@ -156,6 +159,7 @@ impl Context {
             can_demand_additional_args: false,
             precomputed_final: None,
             size: Cell::new(0),
+            branches: None
         }
     }
 }

@@ -6,16 +6,19 @@ use quote::quote;
 use lazy_static::lazy_static;
 use std::mem;
 
-use super::context_arbitrary::*;
-use super::context_arbitrary as context_arbitrary;
-use super::context_arbitrary::Result;
+use crate::string_wrapper::*;
 
-use super::context::*;
+use crate::context_arbitrary::*;
+use crate::context_arbitrary as context_arbitrary;
+use crate::context_arbitrary::Result;
 
-use super::semantics as sem;
-use super::semantics::*;
+use crate::context::*;
+
+use crate::semantics as sem;
+use crate::semantics::*;
 
 use crate::make_type;
+use crate::branches;
 
 
 const MAX_DEPTH: usize = 20;
@@ -106,7 +109,7 @@ fn prescedence(e: &Expr) -> u8 {
         Expr::Try(_) | Expr::Await(_) => 14,
         Expr::Unary(_) => 13,
         Expr::Cast(_) => 12,
-        Expr::Binary(op) => binary_prescedence(op.op),
+        Expr::Binary(op) => binary_prescedence(&op.op),
         Expr::Range(_) => 2,
         Expr::Assign(_) | Expr::AssignOp(_) => 1,
         Expr::Break(_) | Expr::Return(_) => 0,
@@ -122,21 +125,42 @@ fn prescedence(e: &Expr) -> u8 {
     }
 }
 
-fn binary_prescedence(op: BinOp) -> u8 {
+fn binary_prescedence(op: &BinOp) -> u8 {
+    use BinOp::*;
     match op {
-        BinOp::Mul(_) | BinOp::Div(_) | BinOp::Rem(_) => 11,
-        BinOp::Add(_) | BinOp::Sub(_) => 10,
-        BinOp::Shl(_) | BinOp::Shr(_) => 9,
-        BinOp::BitAnd(_) => 8,
-        BinOp::BitXor(_) => 7,
-        BinOp::BitOr(_) => 6,
-        BinOp::Lt(_) | BinOp::Le(_) | BinOp::Gt(_) | BinOp::Ge(_) | BinOp::Ne(_) | BinOp::Eq(_) => 5,
-        BinOp::And(_) => 4,
-        BinOp::Or(_) => 3,
-        BinOp::AddEq(_) | BinOp::SubEq(_) | BinOp::MulEq(_) | BinOp::DivEq(_) | BinOp::RemEq(_) | BinOp::BitXorEq(_) | BinOp::BitAndEq(_) | BinOp::BitOrEq(_) | BinOp::ShlEq(_) | BinOp::ShrEq(_) => 1
+        Mul(_) | Div(_) | Rem(_) => 11,
+        Add(_) | Sub(_) => 10,
+        Shl(_) | Shr(_) => 9,
+        BitAnd(_) => 8,
+        BitXor(_) => 7,
+        BitOr(_) => 6,
+        Lt(_) | Le(_) | Gt(_) | Ge(_) | Ne(_) | Eq(_) => 5,
+        And(_) => 4,
+        Or(_) => 3,
+        AddEq(_) | SubEq(_) | MulEq(_) | DivEq(_) | RemEq(_) |
+        BitXorEq(_) | BitAndEq(_) | BitOrEq(_) | ShlEq(_) | ShrEq(_) => 1
     }
 }
 
+fn binary_associativity(op: &BinOp) -> (u8, u8) {
+    //! The point of the return type is that you can add it to the 
+    //! left and right hand side in order to require things to be 
+    //! parenthesized based on their associativity.
+    //!
+    //! (1,0) means right associative, (0,1) left associative
+    //! and (1,1) means no associativity (which == and ranges have)
+    
+    use BinOp::*;
+    match op {
+        // No associativity
+        Lt(_) | Le(_) | Gt(_) | Ge(_) | Ne(_) | Eq(_) => (1,1),
+        // Right associativity
+        AddEq(_) | SubEq(_) | MulEq(_) | DivEq(_) | RemEq(_) |
+        BitXorEq(_) | BitAndEq(_) | BitOrEq(_) | ShlEq(_) | ShrEq(_) => (1,0),
+        _ => (0,1)
+    }
+
+}
 
 fn parenthesize_block(e: Expr) -> Expr {
     match e {
@@ -660,14 +684,14 @@ fn from_sem_expr(ctx: &Context, u: &mut Unstructured, ex: &sem::Expr) -> Result<
             })
         }
         sem::Expr::BinOp(op, lhs, rhs) => {
-            let presc = binary_prescedence(parse_str(op).expect(format!("Couldn't parse binary operator {}", op).as_str()));
+            let syn_op = parse_str(op).expect(format!("Couldn't parse binary operator {}", op).as_str());
+            let presc = binary_prescedence(&syn_op);
+            let (left_assoc, right_assoc) = binary_associativity(&syn_op);
             Expr::Binary(ExprBinary {
                 attrs: vec![],
                 op: parse_str(op).expect(format!("Failed parsing operator {}", op).as_str()),
-                // We assume that binary operators are left associative, so the rhs needs
-                // a higher prescedence
-                left: Box::new(parenthesize_expr(presc, from_sem_expr(ctx, u, lhs.as_ref())?)),
-                right: Box::new(parenthesize_expr(presc+1, from_sem_expr(ctx, u, rhs.as_ref())?))
+                left: Box::new(parenthesize_expr(presc+left_assoc, from_sem_expr(ctx, u, lhs.as_ref())?)),
+                right: Box::new(parenthesize_expr(presc+right_assoc, from_sem_expr(ctx, u, rhs.as_ref())?))
             })
         }
         sem::Expr::AdditionalArg(_ty, _mt) => parse_quote!(compile_error!("Illegal demand for additional arg"))
@@ -1781,15 +1805,17 @@ fn type_with_sig(ctx: &mut Context, u: &mut Unstructured)
         .collect::<Result<Vec<()>>>()?
         .len();
     for _ in 0..len {
-        let ty = pick_type(ctx, u)?.assign_lts(&mut ||
-            -> arbitrary::Result<sem::Lifetime> {
-            if lt_generics.len() == 0 || Arbitrary::arbitrary(u)? {
-                // Anonymous lifetime (can't be used in the output)
-                Ok(fresh_lt(ctx))
-            } else {
+        let ty = if lt_generics.len() == 0 {
+            pick_type_that(
+                ctx, u,
+                |_,k| k.lifetimes == 0
+            )?
+        } else {
+            pick_type(ctx, u)?.assign_lts(&mut ||
+                -> arbitrary::Result<sem::Lifetime> {
                 Ok(sem::Lifetime::Named(u.choose(&lt_generics)?.clone()))
-            }
-        })?;
+            })?
+        };
         input_tys.push(ty.clone());
         // TODO: allow mutable arguments
         let (pat, vars) = sub_pattern!(ctx, irrefutable!(ctx, pattern_of_type(ctx, u, &ty)?));
@@ -2353,14 +2379,24 @@ impl<'a> ContextArbitrary<'a, Context> for Expr {
     fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
         if ctx.regard_semantics {
             // println!("Expected type: {:?}", ctx.expected_type);
-            weighted_lazy_choose!(u, {
-                10 => {
-                    let expr = construct_value(ctx, u, ctx.expected_type.clone(), ctx.allow_ambiguity)?;
-                    from_sem_expr(ctx, u, &expr)?
-                },
-                // 1 => Expr::If(c_arbitrary(ctx, u)?)
-                1 => Expr::Block(c_arbitrary(ctx, u)?)
-            })
+            // Blocks can't contain references that outlive them
+            if ctx.expected_type.has_lts() {
+                let expr = construct_value(ctx, u, ctx.expected_type.clone(), ctx.allow_ambiguity)?;
+                from_sem_expr(ctx, u, &expr)
+            } else { 
+                weighted_lazy_choose!(u, {
+                    10 => {
+                        let expr = construct_value(
+                            ctx, u,
+                            ctx.expected_type.clone(),
+                            ctx.allow_ambiguity
+                        )?;
+                        from_sem_expr(ctx, u, &expr)?
+                    },
+                    1 => Expr::If(c_arbitrary(ctx, u)?),
+                    1 => Expr::Block(c_arbitrary(ctx, u)?)
+                })
+            }
         } else {
             let place_expr = !ctx.regard_semantics || ctx.is_place_expression;
             let within_depth = ctx.depth < MAX_DEPTH;
@@ -2760,16 +2796,17 @@ impl<'a> ContextArbitrary<'a, Context> for ExprIndex {
 
 impl<'a> ContextArbitrary<'a, Context> for ExprIf {
     fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
-        Ok(ExprIf {
-            attrs: vec![],
-            if_token: parse_quote!(if),
-            cond: if !ctx.regard_semantics && Arbitrary::arbitrary(u)? {
-                let_guard(ctx, u)?
-            } else {
-                with_type!(ctx, make_type!(bool), parens_block!(ctx, c_arbitrary(ctx, u)?))
-            },
-            then_branch: not_fn_block!(ctx, no_block_labels!(ctx, c_arbitrary(ctx, u)?)),
-            else_branch: guarded_lazy_choose!(u, {
+        let then_branch;
+        let else_branch;
+        let cond = if !ctx.regard_semantics && Arbitrary::arbitrary(u)? {
+            let_guard(ctx, u)?
+        } else {
+            with_type!(ctx, make_type!(bool), parens_block!(ctx, c_arbitrary(ctx, u)?))
+        };
+        branches!(ctx, {
+            then_branch = not_fn_block!(ctx, no_block_labels!(ctx, c_arbitrary(ctx, u)?));
+            ctx.branches.as_ref().unwrap().borrow_mut().new_branch();
+            else_branch = guarded_lazy_choose!(u, {
                 !ctx.regard_semantics || ctx.expected_type.name == "#Unit" => None,
                 true => Some((
                     parse_quote!(else),
@@ -2779,6 +2816,13 @@ impl<'a> ContextArbitrary<'a, Context> for ExprIf {
                     })?)))
                 ))
             })?
+        });
+        Ok(ExprIf {
+            attrs: vec![],
+            if_token: parse_quote!(if),
+            cond,
+            then_branch, 
+            else_branch,
         })
     }
 }
@@ -2993,11 +3037,12 @@ let op = lazy_choose!(u,  {
 impl<'a> ContextArbitrary<'a, Context> for ExprBinary {
     fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
         let op = c_arbitrary(ctx, u)?;
+        let (left_assoc, right_assoc) = binary_associativity(&op);
         Ok(ExprBinary {
             attrs: vec![],
-            left: parens_ex!(binary_prescedence(op), ctx, c_arbitrary(ctx, u)?),
+            left: parens_ex!(binary_prescedence(&op) + left_assoc, ctx, c_arbitrary(ctx, u)?),
             op,
-            right: parens_ex!(binary_prescedence(op), ctx, c_arbitrary(ctx, u)?),
+            right: parens_ex!(binary_prescedence(&op) + right_assoc, ctx, c_arbitrary(ctx, u)?),
         })
     }
 }
