@@ -11,85 +11,11 @@ use crate::context::fresh_lt;
 use crate::context_arbitrary::{Result, GenerationError};
 use crate::choose::choose_consume;
 use crate::ty_macros::GEN_STRING;
+use crate::string_wrapper::*;
+use crate::branching::{save_var, save_lt};
 
 use super::context::Context;
 
-#[derive(Clone, Debug)]
-/// We have statically known names for things (like bool) as well as dynamically generated ones
-/// This type allows using them interchangeably and cloning without actually copying the strings
-pub enum StringWrapper {
-    Static(&'static str),
-    Dynamic(Rc<String>)
-}
-
-impl Hash for StringWrapper {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.as_str().hash(state)
-    }
-}
-
-impl PartialEq<StringWrapper> for StringWrapper {
-    fn eq(&self, other: &StringWrapper) -> bool {
-        match (self, other) {
-            (StringWrapper::Static(s1), StringWrapper::Static(s2)) => s1 == s2,
-            (StringWrapper::Static(s1), StringWrapper::Dynamic(s2)) => s1 == &s2.as_ref().as_str(),
-            (StringWrapper::Dynamic(s1), StringWrapper::Static(s2)) => &s1.as_ref().as_str() == s2,
-            (StringWrapper::Dynamic(s1), StringWrapper::Dynamic(s2)) => s1 == s2
-        }
-    }
-}
-impl Eq for StringWrapper {}
-impl ToString for StringWrapper {
-    fn to_string(&self) -> String {
-        match self {
-            StringWrapper::Static(s) => s.to_string(),
-            StringWrapper::Dynamic(s) => String::clone(s)
-        }
-    }
-}
-
-impl StringWrapper {
-    pub fn as_str<'a>(&'a self) -> &'a str {
-        match self {
-            StringWrapper::Static(s) => s,
-            StringWrapper::Dynamic(s) => &*s
-        }
-    }
-    pub fn starts_with(&self, p: &str) -> bool {
-        self.as_str().starts_with(p)
-    }
-}
-
-impl PartialEq<String> for StringWrapper {
-    fn eq(&self, other: &String) -> bool {
-        match self {
-            StringWrapper::Static(s) => s == &other.as_str(),
-            StringWrapper::Dynamic(s) => s.as_ref() == other
-        }
-    }
-}
-
-
-impl PartialEq<&str> for StringWrapper {
-    fn eq(&self, other: &&str) -> bool {
-        match self {
-            StringWrapper::Static(s) => s == other,
-            StringWrapper::Dynamic(s) => &s.as_ref().as_str() == other
-        }
-    }
-}
-
-impl From<String> for StringWrapper {
-    fn from(s: String) -> Self {
-        StringWrapper::Dynamic(Rc::new(s))
-    }
-}
-
-impl From<&'static str> for StringWrapper {
-    fn from(s: &'static str) -> Self {
-        StringWrapper::Static(s)
-    }
-}
 #[derive(PartialEq, Clone, Debug)]
 pub enum Mutability { Immutable, Mutable }
 #[derive(PartialEq, Eq, Hash, Clone, Debug)]
@@ -172,7 +98,7 @@ impl Display for Type {
             } else {
                 format!("[{}]",
                     self.type_args.iter()
-                        .map(|a| format!("{}, ", a))
+                        .map(|a| format!("{}", a))
                         .chain(
                             self.lt_args.iter().map(|lt| match lt {
                                 Lifetime::Named(n) => n.as_str().to_string(),
@@ -333,7 +259,9 @@ pub use Either::{Left, Right};
 pub enum Refs {
     None,
     MutRef(Lifetime),
-    Ref(Vec<Lifetime>)
+    Ref(Vec<Lifetime>),
+    /// Only possible through branching (e.g. if/else)
+    BranchingRefs { mutable: Vec<Lifetime>, immutable: Vec<Lifetime> }
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct Variable {
@@ -357,6 +285,11 @@ impl Variable {
                 MutRef(mut_lt) => {
                     end_lifetime(ctx, mut_lt);
                     Ref(vec![lt])
+                },
+                BranchingRefs { mutable, immutable } => {
+                    mutable.into_iter().for_each(|lt| end_lifetime(ctx, lt));
+                    immutable.push(lt);
+                    Ref(immutable.clone())
                 }
             }
         });
@@ -368,7 +301,11 @@ impl Variable {
             match r {
                 None => {}
                 Ref(lts) => lts.iter().for_each(|lt| end_lifetime(ctx, lt)),
-                MutRef(mut_lt) => end_lifetime(ctx, mut_lt)
+                MutRef(mut_lt) => end_lifetime(ctx, mut_lt),
+                BranchingRefs { mutable, immutable } => {
+                    mutable.into_iter().for_each(|lt| end_lifetime(ctx, lt));
+                    immutable.into_iter().for_each(|lt| end_lifetime(ctx, lt));
+                }
             }
             MutRef(lt)
         });
@@ -552,7 +489,7 @@ pub enum Expr {
 
 impl Type {
     pub fn sub_tys<'a>(&'a self) -> Box<dyn Iterator<Item=&Type> + 'a> {
-        Box::new(iter::once(self).chain(self.type_args.iter()))
+        Box::new(iter::once(self).chain(self.type_args.iter().flat_map(Type::sub_tys)))
     }
     pub fn matches(&self, other: &Type) -> bool {
         self.matches_with_generics(other, &self.type_generics)
@@ -825,7 +762,11 @@ pub fn add_lifetime(ctx: &mut Context, lt: Lifetime) {
 
 pub fn end_lifetime(ctx: &Context, lt: &Lifetime) {
     for scope in ctx.scopes.iter() {
-        if let Some((is_valid, refs)) = scope.lifetimes.get(lt) {
+        if let Some(data) = scope.lifetimes.get(lt) {
+            if ctx.branches.is_some() {
+                save_lt(ctx, data, lt.clone());
+            }
+            let (is_valid, refs) = data;
             if is_valid.get() {
                 is_valid.set(false);
                 for rf in refs.borrow().iter() {
@@ -842,7 +783,11 @@ pub fn end_lifetime(ctx: &Context, lt: &Lifetime) {
 pub fn constrain_lt(ctx: &Context, lt: &Lifetime, constraint: &Lifetime) {
     if lt != &Lifetime::Any {
         for scope in ctx.scopes.iter() {
-            if let Some((_, refs)) = scope.lifetimes.get(constraint) {
+            if let Some(data) = scope.lifetimes.get(constraint) {
+                if ctx.branches.is_some() {
+                    save_lt(ctx, data, lt.clone());
+                }
+                let refs = &data.1;
                 refs.borrow_mut().push(lt.clone());
             }
         }
@@ -1338,7 +1283,7 @@ pub fn construct_value_inner<'a>(
 
     enum PossibleExpression<'a> {
         Struct(&'a StringWrapper, &'a Struct),
-        Var(&'a StringWrapper, &'a Variable),
+        Var(&'a StringWrapper, &'a Rc<Variable>),
         Fn(&'a StringWrapper, &'a Type, &'a Func),
         Method(&'a Method, &'a Either<Rc<Type>, TraitDescription>),
         Field(&'a Type, &'a Type, &'a StringWrapper),
@@ -1542,8 +1487,14 @@ pub fn construct_value_inner<'a>(
         PossibleExpression::Var(name, var) => {
             match var_handling {
                 Own => var.mve(ctx),
-                Borrow(lt) => var.borrow(ctx, lt),
-                MutBorrow(lt) => var.mut_borrow(ctx, lt)
+                Borrow(lt) => {
+                    save_var(ctx, var, name.clone());
+                    var.borrow(ctx, lt)
+                }
+                MutBorrow(lt) => {
+                    save_var(ctx, var, name.clone());
+                    var.mut_borrow(ctx, lt)
+                }
             }
             Ok(Expr::Var(name.to_owned()))
         }

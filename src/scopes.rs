@@ -5,6 +5,7 @@ use arbitrary::Arbitrary;
 
 use crate::context_arbitrary::c_arbitrary_iter_with_non_mut;
 use crate::semantics::*;
+use crate::string_wrapper::*;
 use crate::{make_var, make_type, make_kind, make_methods, make_trait, make_struct, make_macro};
 
 
