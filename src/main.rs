@@ -91,22 +91,22 @@ fn main() -> Result<(), MainError> {
         )?;
         let (m_program_code, m_error) = program_generator.communicate_bytes(Some(&data))?;
         if let Some(err) = m_error {
-            eprintln!("{}", String::from_utf8(err).unwrap());
+            eprintln!("{}", String::from_utf8(err)?);
             errors += 1;
             continue;
         } else if let Some(print_stmnts) = m_program_code {
-            print!("{}", String::from_utf8(print_stmnts).unwrap());
+            print!("{}", String::from_utf8(print_stmnts)?);
         }
         let mut output;
         if flags.use_semantics {
             output = parser_wrapper::compile(filename)?;
         } else {
-            let buf = gag::BufferRedirect::stderr().unwrap();
+            let buf = gag::BufferRedirect::stderr().expect("Error redirecting stdout");
             output = String::new();
             if let Err(e) = parse(filename) {
                 output = format!("{:?}", e).to_string();
             }
-            buf.into_inner().read_to_string(&mut output).unwrap();
+            buf.into_inner().read_to_string(&mut output)?;
         }
 
         if !output.is_empty() {
@@ -127,7 +127,8 @@ enum MainError {
     GenError(context_arbitrary::GenerationError),
     ParserError(parser_wrapper::ParserError),
     SubProcError(subprocess::PopenError),
-    IoError(std::io::Error)
+    IoError(std::io::Error),
+    Utf8Error(std::string::FromUtf8Error)
 }
 
 impl Display for MainError {
@@ -137,7 +138,8 @@ impl Display for MainError {
             GenError(e) => e.fmt(f),
             ParserError(e) => e.fmt(f),
             SubProcError(e) => e.fmt(f),
-            IoError(e) => e.fmt(f)
+            IoError(e) => e.fmt(f),
+            Utf8Error(e) => e.fmt(f)
         }
     }
 }
@@ -165,6 +167,12 @@ impl From<subprocess::PopenError> for MainError {
 impl From<std::io::Error> for MainError {
     fn from(e: std::io::Error) -> Self {
         MainError::IoError(e)
+    }
+}
+
+impl From<std::string::FromUtf8Error> for MainError {
+    fn from(e: std::string::FromUtf8Error) -> Self {
+        MainError::Utf8Error(e)
     }
 }
 

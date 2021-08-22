@@ -6,8 +6,9 @@ use std::hash::Hash;
 use std::iter;
 use std::iter::FromIterator;
 use std::rc::Rc;
+use std::collections::HashSet;
 use arbitrary::{Arbitrary, Unstructured};
-use crate::context::fresh_lt;
+use crate::context::{RefType, fresh_lt};
 use crate::context_arbitrary::{Result, GenerationError};
 use crate::choose::choose_consume;
 use crate::ty_macros::GEN_STRING;
@@ -54,7 +55,8 @@ impl Lifetime {
         return false
     }
 }
-pub type Generics = Vec<Generic>;
+pub type TypeGenerics = Vec<Generic>;
+pub type LtGenerics = Vec<StringWrapper>;
 #[derive(PartialEq, Clone, Debug)]
 pub struct Generic {
     pub name: StringWrapper,
@@ -69,8 +71,8 @@ pub struct Constraint {
 #[derive(PartialEq, Clone, Debug)]
 pub struct Type {
     pub name: StringWrapper,
-    pub lt_generics: Vec<StringWrapper>,
-    pub type_generics: Generics,
+    pub lt_generics: LtGenerics,
+    pub type_generics: TypeGenerics,
     pub lt_args: Vec<Lifetime>,
     pub type_args: Vec<Type>,
     pub func: Option<Box<Func>>,
@@ -90,7 +92,8 @@ impl Display for Type {
                         .chain(
                             self.lt_generics.iter().map(StringWrapper::to_string)
                         )
-                        .reduce(|acc, gen| format!("{}, {}", acc, gen)).unwrap()
+                        .reduce(|acc, gen| format!("{}, {}", acc, gen))
+                        .unwrap_or("".to_string())
                 )
             },
             if self.type_args.is_empty() {
@@ -106,7 +109,8 @@ impl Display for Type {
                                 Lifetime::Any => "#any".to_string(),
                             })
                         )
-                        .reduce(|acc, gen| format!("{}, {}", acc, gen)).unwrap()
+                        .reduce(|acc, gen| format!("{}, {}", acc, gen))
+                        .unwrap_or("".to_string())
                 )
             }
         )
@@ -169,12 +173,7 @@ impl IntoIterator for Fields {
         }
     }
 }
-#[derive(PartialEq, Clone, Debug)]
-pub struct Struct {
-    pub is_enum_variant: bool,
-    pub ty: Rc<Type>,
-    pub fields: Fields
-}
+pub type Struct = Rc<Fields>;
 #[derive(PartialEq, Clone, Debug)]
 #[allow(dead_code)]
 pub enum BracketType { Round, Square, Curly }
@@ -221,33 +220,33 @@ pub type SelfParam = Option<VarHandling>;
 pub struct Method {
     pub name: StringWrapper,
     pub self_param: SelfParam,
-    pub lt_generics: Vec<StringWrapper>,
+    pub lt_generics: LtGenerics,
     pub lt_args: Vec<Lifetime>,
-    pub type_generics: Generics,
+    pub type_generics: TypeGenerics,
     pub type_args: Vec<Type>,
     pub func: Func
 }
 #[derive(Clone, Debug)]
 pub struct TraitDescription {
     pub name: StringWrapper,
-    pub trait_generics: Generics
+    pub trait_generics: TypeGenerics
 }
 #[derive(Clone, Debug)]
 pub struct Trait {
     pub name: StringWrapper,
-    pub type_generics: Generics,
+    pub type_generics: TypeGenerics,
     pub implementors: Vec<(TraitArgs, Rc<Type>)>
 }
 #[derive(Clone, Debug)]
 pub struct TraitArgs {
-    pub type_generics: Generics,
+    pub type_generics: TypeGenerics,
     pub type_args: Vec<Type>
 }
 impl TraitArgs {
     pub fn matches(&self, args: &Vec<Type>) -> bool {
         self.matches_with_generics(args, &vec![])
     }
-    pub fn matches_with_generics(&self, args: &Vec<Type>, generics: &Generics) -> bool {
+    pub fn matches_with_generics(&self, args: &Vec<Type>, generics: &TypeGenerics) -> bool {
         self.type_args.iter().zip(args)
             .all(|(a1, a2)| a1.matches_with_generics(a2, generics))
     }
@@ -280,8 +279,11 @@ impl Variable {
             constrain_lt(ctx, &lt, &self.lifetime);
             match r {
                 None => Ref(vec![lt]),
-                // TODO:Is there a way to do this without cloning?
-                Ref(lts) => { lts.push(lt); Ref(lts.clone()) },
+                Ref(old_lts) => {
+                    let mut lts = std::mem::replace(old_lts, vec![]);
+                    lts.push(lt);
+                    Ref(lts)
+                },
                 MutRef(mut_lt) => {
                     end_lifetime(ctx, mut_lt);
                     Ref(vec![lt])
@@ -322,7 +324,8 @@ pub type TypeScope = HashMap<StringWrapper, Kind>;
 pub type LtRefs = (Cell<bool>, RefCell<Vec<Lifetime>>);
 pub type LtScope = HashMap<Lifetime, LtRefs>;
 pub type TraitScope = HashMap<StringWrapper, Trait>;
-pub type StructScope = HashMap<StringWrapper, Rc<Struct>>;
+pub type StructScope = HashMap<StringWrapper, (Rc<Type>, Struct)>;
+pub type EnumScope = HashMap<StringWrapper, (Rc<Type>, HashMap<StringWrapper, Struct>)>;
 pub type MacroScope = HashMap<StringWrapper, Rc<Macro>>;
 pub type MethodScope = Vec<(Either<Rc<Type>, TraitDescription>, Vec<Rc<Method>>)>;
 #[derive(Clone, Debug)]
@@ -333,13 +336,14 @@ pub struct Scope {
     pub lifetimes: LtScope,
     pub traits: TraitScope,
     pub structs: StructScope,
+    pub enums: EnumScope,
     pub macros: MacroScope,
     pub methods: MethodScope,
     pub by_ty_name: HashMap<StringWrapper, TypeIndexed>
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct Operator {
-    pub type_generics: Generics,
+    pub type_generics: TypeGenerics,
     pub operands: (Type, Option<Type>),
     pub ret_type: Type,
 }
@@ -354,24 +358,29 @@ impl PartialEq for Scope {
 }
 impl Scope {
     pub fn make_ty_index(&mut self) -> &mut Self {
-        for (name, struc) in &self.structs {
-            self.by_ty_name.entry(struc.ty.name.clone())
+        let enums_and_structs =
+            self.structs.iter().map(|(n, (ty, st))| (n, false, ty, st))
+                .chain(self.enums.values()
+                    .flat_map(|(ty, sts)|
+                        sts.iter().map(move |(n, st)| (n, true, ty, st))));
+        for (name, is_enum_variant, struc_ty, struc) in enums_and_structs {
+            self.by_ty_name.entry(struc_ty.name.clone())
                 .or_insert(Default::default())
-                .structs.insert(name.clone(), struc.clone());
-            for (name, field) in struc.fields.iter() {
-                if !struc.is_enum_variant && !struc.ty.name.starts_with("#Tuple") {
-                    if field.ty.is_generic_with(&struc.ty.type_generics).is_some() {
+                .structs.insert(name.clone(), (struc_ty.clone(), struc.clone()));
+            for (name, field) in struc.iter() {
+                if !is_enum_variant && !struc_ty.name.starts_with("#Tuple") {
+                    if field.ty.is_generic_with(&struc_ty.type_generics).is_some() {
                         self.by_ty_name.entry("#Generic".into())
                             .or_insert(Default::default())
                             .fields.push((
-                                struc.ty.clone(),
+                                struc_ty.clone(),
                                 field.ty.clone(),
                                 name.clone()
                             ))
                     } else {
                         self.by_ty_name.entry(field.ty.name.clone())
                             .or_insert(Default::default())
-                            .fields.push((struc.ty.clone(), field.ty.clone(), name.clone()))
+                            .fields.push((struc_ty.clone(), field.ty.clone(), name.clone()))
                     }
                 }
             }
@@ -428,7 +437,7 @@ impl Scope {
 #[derive(Clone, Debug, Default)]
 pub struct TypeIndexed {
     pub vars: HashMap<StringWrapper, Rc<Variable>>,
-    pub structs: HashMap<StringWrapper, Rc<Struct>>,
+    pub structs: HashMap<StringWrapper, (Rc<Type>, Struct)>,
     pub macros: HashMap<StringWrapper, Rc<Macro>>,
     pub fields: Vec<(Rc<Type>, Rc<Type>, StringWrapper)>,
     pub methods: Vec<(Either<Rc<Type>, TraitDescription>, Rc<Method>)>,
@@ -441,7 +450,8 @@ pub enum RcList<T> {
 }
 pub type Stack<T> = Rc<RcList<T>>;
 impl<T> RcList<T> {
-    fn iter<'a>(&'a self) -> Box<dyn Iterator<Item=&T> + 'a> {
+    pub fn iter<'a>(&'a self) -> Box<dyn Iterator<Item=&T> + 'a> {
+        //! WARNING: calling while a link is mut_borrowed can result in undefined behavior
         match self {
             RcList::Nill => Box::new(iter::empty()),
             RcList::Cons(t, rest) => Box::new(
@@ -451,7 +461,7 @@ impl<T> RcList<T> {
             )
         }
     }
-    fn sized_iter<'a>(&'a self) -> std::vec::IntoIter<&T> {
+    pub fn sized_iter<'a>(&'a self) -> std::vec::IntoIter<&T> {
         self.iter().collect::<Vec<_>>().into_iter()
     }
     pub fn top_mut(&self) -> Option<RefMut<T>> {
@@ -494,7 +504,7 @@ impl Type {
     pub fn matches(&self, other: &Type) -> bool {
         self.matches_with_generics(other, &self.type_generics)
     }
-    pub fn matches_with_generics(&self, other: &Type, generics: &Generics) -> bool {
+    pub fn matches_with_generics(&self, other: &Type, generics: &TypeGenerics) -> bool {
         //! NOT reflexive: Option{N}[N].matches(Option[i32]) but not
         //! Option[i32].matches(Option{N}[N])
 
@@ -575,7 +585,7 @@ impl Type {
                         is_arg_for_other: gen.is_arg_for_other && other.is_arg_for_other
                     }
                 })
-                .collect::<Generics>();
+                .collect::<TypeGenerics>();
 
         return Some(Type {
             type_generics,
@@ -584,7 +594,7 @@ impl Type {
         })
 
     }
-    pub fn is_generic_with<'a>(&self, generics: &'a Generics) -> Option<&'a Vec<Constraint>> {
+    pub fn is_generic_with<'a>(&self, generics: &'a TypeGenerics) -> Option<&'a Vec<Constraint>> {
         generics.iter().find_map(|gen| {
             if gen.name == self.name {
                 Some(&gen.constraints)
@@ -655,6 +665,9 @@ impl Type {
     pub fn has_lts(&self) -> bool {
         self.sub_tys().any(|ty| ty.lt_args.len() > 0)
     }
+    pub fn has_named_lts(&self) -> bool {
+        self.sub_tys().any(|ty| ty.lt_args.iter().any(|lt| lt.name().is_some()))
+    }
     pub fn needs_lt(&self) -> bool {
         self.lt_args.iter().any(|lt| lt == &Lifetime::Any) ||
         self.type_args.iter().any(|a| a.needs_lt())
@@ -685,7 +698,7 @@ impl Type {
     }
     pub fn assign_fresh_lt(&self, ctx: &Context) -> (Option<Lifetime>, Type) {
         let mut cached_lt: Option<Lifetime> = None;
-        let ty =self.assign_lts(&mut || {
+        let ty = self.assign_lts(&mut || {
             match &cached_lt {
                 Some(lt) => Ok::<Lifetime, !>(lt.clone()),
                 None => {
@@ -743,6 +756,7 @@ pub fn push_scope(ctx: &mut Context) {
         lifetimes: HashMap::new(),
         traits: HashMap::new(),
         structs: HashMap::new(),
+        enums: HashMap::new(),
         by_ty_name: HashMap::new()
     }), ctx.scopes.clone()));
 }
@@ -779,7 +793,6 @@ pub fn end_lifetime(ctx: &Context, lt: &Lifetime) {
     // panic!("Attemted to remove lifetime {:?}, but it couldn't be found", lt);
 }
 
-#[allow(dead_code)]
 pub fn constrain_lt(ctx: &Context, lt: &Lifetime, constraint: &Lifetime) {
     if lt != &Lifetime::Any {
         for scope in ctx.scopes.iter() {
@@ -791,6 +804,32 @@ pub fn constrain_lt(ctx: &Context, lt: &Lifetime, constraint: &Lifetime) {
                 refs.borrow_mut().push(lt.clone());
             }
         }
+    }
+}
+
+pub fn reserve_lt(ctx: &Context, lt: Lifetime, reserve_ty: RefType) {
+    if lt != Lifetime::Any {
+
+        for scope in ctx.scopes.iter() {
+            for (other_lt, (_, refs)) in scope.lifetimes.iter() {
+                if refs.borrow().contains(&lt) {
+                    reserve_lt(ctx, other_lt.clone(), reserve_ty);
+                }
+            }
+        }
+        ctx.reserved_lts.borrow_mut().last_mut().unwrap().insert(lt, reserve_ty);
+
+    }
+}
+
+pub fn is_free(ctx: &Context, lt: &Lifetime, ref_ty: RefType) -> bool {
+    if lt == &Lifetime::Any {
+        true
+    } else {
+        use RefType::*;
+        ctx.reserved_lts.borrow().iter().all(
+            |hmap| hmap.get(lt).map_or(true, |other| ref_ty == Borrow && other == &Borrow)
+        )
     }
 }
 
@@ -825,21 +864,30 @@ pub fn remove_type(ctx: &mut Context, name: StringWrapper) {
 }
 
 #[allow(dead_code)]
-pub fn add_struct(ctx: &mut Context, name: StringWrapper, struc: Struct) {
+pub fn add_struct(ctx: &mut Context, name: StringWrapper, ty: Type, struc: Struct) {
     ctx.scopes.top_mut().map(|mut l| {
-        if !struc.is_enum_variant {
-            for (name, field) in struc.fields.iter() {
-                // println!("Added field {}: {}", name.as_str(), field.ty);
-                l.by_ty_name.entry(field.ty.as_ref().name.clone())
-                    .or_insert(Default::default())
-                    .fields.push((struc.ty.clone(), field.ty.clone(), name.clone()))
-            }
+        let rc_ty = Rc::new(ty);
+        for (name, field) in struc.iter() {
+            l.by_ty_name.entry(field.ty.as_ref().name.clone())
+                .or_insert(Default::default())
+                .fields.push((rc_ty.clone(), field.ty.clone(), name.clone()))
         }
-        let rc_struc = Rc::new(struc);
-        l.by_ty_name.entry(rc_struc.ty.name.clone())
+        l.by_ty_name.entry(rc_ty.name.clone())
             .or_insert(Default::default())
-            .structs.insert(name.clone(), rc_struc.clone());
-        l.structs.insert(name, rc_struc);
+            .structs.insert(name.clone(), (rc_ty.clone(), struc.clone()));
+        l.structs.insert(name, (rc_ty, struc));
+    });
+}
+
+pub fn add_enum(ctx: &mut Context, name: StringWrapper, ty: Type, strucs: HashMap<StringWrapper, Struct>) {
+    ctx.scopes.top_mut().map(|mut l| {
+        let rc_ty = Rc::new(ty);
+        for (variant_name, struc) in strucs.iter() {
+            l.by_ty_name.entry(rc_ty.name.clone())
+                .or_insert(Default::default())
+                .structs.insert(variant_name.clone(), (rc_ty.clone(), struc.clone()));
+        }
+        l.enums.insert(name, (rc_ty, strucs));
     });
 }
 
@@ -906,13 +954,20 @@ pub fn pick_type<'a>(ctx: &Context, u: &mut Unstructured<'a>) -> Result<Type> {
 pub fn pick_type_that<'a, F>(ctx: &Context, u: &mut Unstructured<'a>, pred: F)
      -> Result<Type> 
 where F: Fn(&StringWrapper, &Kind) -> bool + Clone {
-    let kinds: Vec<(&StringWrapper, &Kind)> =
-        ctx.scopes.iter().flat_map(|s| s.types.iter())
-            .filter(|(n,k)| pred(n,k)).collect();
+    let mut seen = HashSet::new();
+    let mut kinds: Vec<(&StringWrapper, &Kind)> = vec![];
+    for scope in ctx.scopes.iter() {
+        for (name, kind) in scope.types.iter() {
+            if !seen.contains(name) {
+                seen.insert(name);
+                if pred(name, kind) {
+                    kinds.push((name, kind));
+                }
+            }
+        }
+    }
     let &(name, kind) = u.choose(&kinds)?;
     let n_of_args = kind.types;
-    // TODO: add lifetimes
-    // TODO: fix mutability
     // TODO: pick functions
     // TODO: handle not picking ! more elegantly 
     let mut lt_args = vec![];
@@ -959,7 +1014,7 @@ pub fn pick_type_impls(ctx: &Context, u: &mut Unstructured, constraints: &Vec<Co
 pub fn pick_type_impls_interconnected<'a>(
         ctx: &'a Context, u: &mut Unstructured,
         constraints: &'a Vec<Constraint>,
-        determined_by_others: &Generics
+        determined_by_others: &TypeGenerics
     ) -> Result<(Type, Vec<(StringWrapper, &'a Type)>)> {
     
     if constraints.is_empty() {
@@ -1059,6 +1114,14 @@ impl VarHandling {
     }
 }
 use VarHandling::*;
+impl From<&VarHandling> for RefType {
+    fn from(r: &VarHandling) -> Self {
+        match r {
+            VarHandling::Borrow(_) => RefType::Borrow,
+            _ => RefType::MoveOrMut
+        }
+    }
+}
 
 pub fn construct_value<'a>(
     ctx: &Context,
@@ -1067,6 +1130,7 @@ pub fn construct_value<'a>(
     allow_ambiguity: bool
 ) -> Result<Expr> {
     ctx.size.set(0);
+    ctx.reserved_lts.replace(vec![]);
     construct_value_inner(ctx, u, ty, allow_ambiguity, Own)
 }
 
@@ -1083,7 +1147,7 @@ pub fn construct_value_inner<'a>(
     // println!("construct_value called on type {}", ty);
 
     // NOTE: there is a bias towards expressions further to the left being bigger.
-    // Recursive calls should be made in a random order.
+    // Recursive calls could be made in a random order to adress this.
     let old_size = ctx.size.get();
     // println!("{}", old_size);
     ctx.size.set(old_size + 1);
@@ -1103,6 +1167,8 @@ pub fn construct_value_inner<'a>(
         return new_map;           
     }
 
+    ctx.reserved_lts.borrow_mut().push(HashMap::new());
+
     fn handle_arg_generics(
         ty_generics: Vec<(StringWrapper, &Type)>,
         lt_generics: Vec<(StringWrapper, &Lifetime)>,
@@ -1113,7 +1179,6 @@ pub fn construct_value_inner<'a>(
         'vec_args: for arg in args {
             for (ty_name, ty) in ty_generics.iter() {
                 if arg.contains(ty_name) {
-                    // TODO: replace both in one pass?
                     new_args.push(arg.replace(&ty_name, &ty).replace_lts(&lt_generics));
                     continue 'vec_args;
                 }
@@ -1154,7 +1219,7 @@ pub fn construct_value_inner<'a>(
         allow_ambiguity: bool,
         ty1: &Type, ty2: &Type, 
         args: &Vec<Type>,
-        type_generics: &Generics, type_args: &Vec<Type>,
+        type_generics: &TypeGenerics, type_args: &Vec<Type>,
     ) -> Result<(Option<Vec<usize>>, Vec<Type>)> {
     //! The output type is perhaps a bit counter-intuitive,
     //! (None, tys) means that the function *should* be given
@@ -1253,7 +1318,7 @@ pub fn construct_value_inner<'a>(
 
     fn generate_free_generics<'a>(
         ctx: &'a Context, u: &mut Unstructured,
-        full_generics: &'a Generics,
+        full_generics: &'a TypeGenerics,
         so_far: &Vec<(StringWrapper, &Type)>
     ) -> Result<Vec<(StringWrapper, Either<Type, &'a Type>)>> {
         let mut result = vec![];
@@ -1282,7 +1347,7 @@ pub fn construct_value_inner<'a>(
     }
 
     enum PossibleExpression<'a> {
-        Struct(&'a StringWrapper, &'a Struct),
+        Struct(&'a StringWrapper, &'a Rc<Type>, &'a Struct),
         Var(&'a StringWrapper, &'a Rc<Variable>),
         Fn(&'a StringWrapper, &'a Type, &'a Func),
         Method(&'a Method, &'a Either<Rc<Type>, TraitDescription>),
@@ -1334,18 +1399,24 @@ pub fn construct_value_inner<'a>(
                     }
                 );
 
-        for (name, struc) in structs {
+        for (name, (struc_ty, struc)) in structs {
             // NOTE: structs are always allowed, because otherwise some 
             // things might not be constructable
-            if struc.ty.matches(&ty) {
-                possible_exprs.push(PossibleExpression::Struct(name, struc));
+            if struc_ty.matches(&ty) {
+                possible_exprs.push(PossibleExpression::Struct(name, struc_ty, struc));
             }
         }
+        let mut seen_vars = HashSet::new();
         for (name, var) in vars {
+            let isnt_shadowed = !seen_vars.contains(name);
+            seen_vars.insert(name);
             let doesnt_break_mutability =
                 !var_handling.is_mut_borrow() ||
                 var.mutability == Mutability::Mutable;
+            let isnt_reserved = is_free(ctx, &var.lifetime, (&var_handling).into());
             if doesnt_break_mutability &&
+                isnt_shadowed &&
+                isnt_reserved &&
                 var.lifetime.is_valid(ctx) &&
                 var.ty.matches(&ty) {
                 possible_exprs.push(PossibleExpression::Var(name, var));
@@ -1400,7 +1471,7 @@ pub fn construct_value_inner<'a>(
                 }
             }
         }
-        if ctx.can_demand_additional_args && ty.has_lts() {
+        if ctx.can_demand_additional_args && ty.has_named_lts() {
             possible_exprs.push(PossibleExpression::AdditionalArg)
         }
     }
@@ -1419,21 +1490,21 @@ pub fn construct_value_inner<'a>(
         return Ok(report_unconstructable_variable(ty.clone()));
     }
     let choice = choose_consume(u, possible_exprs.into_iter())?;
-    match choice {
-        PossibleExpression::Struct(name, struc) => {
+    let result = match choice {
+        PossibleExpression::Struct(name, struc_ty, struc) => {
             let determined_fields = make_struct_generics(
                 u, 
                 allow_ambiguity,
-                &struc.ty,
-                struc.fields.iter().map(|(_,f)| f.ty.as_ref()).collect(),
+                &struc_ty,
+                struc.iter().map(|(_,f)| f.ty.as_ref()).collect(),
             )?;
             let self_str = "Self".into();
             let generics =
-                iter::once((self_str, struc.ty.as_ref()))
-                    .chain(struc.ty.type_generics.iter().map(|t| t.name.clone())
+                iter::once((self_str, struc_ty.as_ref()))
+                    .chain(struc_ty.type_generics.iter().map(|t| t.name.clone())
                         .zip(ty.type_args.iter()))
                     .collect();
-            match &struc.fields {
+            match struc.as_ref() {
                 Fields::Named(fields) => {
                     let mut args = vec![];
                     for (i, (name, arg)) in handle_field_generics(generics, &fields).into_iter().enumerate() {
@@ -1485,6 +1556,7 @@ pub fn construct_value_inner<'a>(
             }
         }
         PossibleExpression::Var(name, var) => {
+            reserve_lt(ctx, var.lifetime.clone(), (&var_handling).into());
             match var_handling {
                 Own => var.mve(ctx),
                 Borrow(lt) => {
@@ -1722,7 +1794,9 @@ pub fn construct_value_inner<'a>(
                 Mutability::Immutable
             }
         ))
-    }
+    };
+    ctx.reserved_lts.borrow_mut().pop();
+    return result;
 }
 
 pub fn kind_to_type<S: Into<StringWrapper>>(name: S, kind: &Kind) -> Type {

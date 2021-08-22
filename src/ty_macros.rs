@@ -372,19 +372,44 @@ macro_rules! parse_types {
         (crate::parse_types!($(,$tys)*,make_type!($($ty)*);$($rest)*));
 }
 
+#[macro_export]
+macro_rules! make_enum {
+    ($name:path$({$($gen:tt)*})?: ($($structs:tt)*)) => (
+        (StringWrapper::Static(stringify!($name)), (
+            Rc::new(make_type!($name$({$($gen)*})?)),
+            crate::parse_structs!($name;;$($structs)*,)
+        ))
+    )
+}
+
+#[macro_export]
+macro_rules! parse_structs {
+    ($prefix:path;$(,$structs:expr)*;$(,)?) =>
+        (vec![$($structs,)*].into_iter().collect::<HashMap<_,_>>());
+    ($prefix:path;$(,$structs:expr)*;$name:ident, $($rest:tt)*) => {
+        crate::parse_structs!($prefix;$(,$structs)*, (
+            StringWrapper::from(format!("{}::{}", stringify!($prefix), stringify!($name))),
+            Rc::new(crate::semantics::Fields::None)
+        );$($rest)*)
+    };
+    ($prefix:path;$(,$structs:expr)*;$name:ident($($args:tt)*), $($rest:tt)*) => {
+        crate::parse_structs!($prefix;$(,$structs)*, (
+            StringWrapper::from(format!("{}::{}", stringify!($prefix), stringify!($name))),
+            Rc::new(crate::parse_unnamed_fields!(;$($args)*,))
+        );$($rest)*)
+    }
+}
 
 #[macro_export]
 macro_rules! make_struct {
-    (()) => (("#Unit".into(), crate::semantics::Struct {
-        is_enum_variant: false,
-        ty: Rc::new(make_type!(())),
-        fields: Fields::None
-    }));
+    (()) => (("#Unit".into(), (
+        Rc::new(make_type!(())),
+        Rc::new(Fields::None)
+    )));
     (($len:expr;)) => ({
         let len = $len;
-        (crate::ty_macros::TUPLE_NAMES[len-1].into(), crate::semantics::Struct {
-            is_enum_variant: false,
-            ty: Rc::new(Type {
+        (crate::ty_macros::TUPLE_NAMES[len-1].into(), (
+            Rc::new(Type {
                 name: crate::ty_macros::TUPLE_NAMES[len-1].into(),
                 lt_args: vec![],
                 lt_generics: vec![],
@@ -398,41 +423,27 @@ macro_rules! make_struct {
                 func: None,
                 is_visible: true,
             }),
-            fields: Fields::Unnamed(crate::ty_macros::GEN_STRING[0..len].iter().map(|name| Field {
+            Rc::new(Fields::Unnamed(crate::ty_macros::GEN_STRING[0..len].iter().map(|name| Field {
                 visible: true,
                 ty: Rc::new(name_to_type(name.to_owned()))
-            }).collect())
-        })
+            }).collect()))
+        ))
     });
-    ($name:ident$($rest:tt)*) => ({
-        let (name, struc) = make_struct!(:$name: $name$($rest)*);
-        (name, crate::semantics::Struct {
-            is_enum_variant: false, 
-            ..struc
-        })
-    });
-    (:$ty:path: $name:path$([$($gen:tt)*])? ) =>
-        ((stringify!($name).into(), crate::semantics::Struct {
-            is_enum_variant: false,
-            ty: Rc::new(make_type!($ty$({$($gen)*})?)),
-            fields: Fields::None
-        }));
-    ($name:ident$([$($gen:tt)*])? ( $($fields:tt)* )) =>
-        (make_struct!(:$name:$name$([$($gen)*])? ( $($fields)* )));
-    ($name:path$([$($gen:tt)*])? { $($fields:tt)* }) =>
-        (make_struct!(:$name:$name$([$($gen)*])? { $($fields)* }));
-    (:$ty:path: $name:ident $([$($gen:tt)*])? ( $($fields:tt)* )) =>
-        ((StringWrapper::Static(stringify!($name)), crate::semantics::Struct {
-            is_enum_variant: true,
-            ty: Rc::new(make_type!($ty$({$($gen)*}[$($gen)*])?)),
-            fields: crate::parse_unnamed_fields!(;$($fields)*,)
-        }));
-    (:$ty:path: $name:path $([$($gen:tt)*])? { $($fields:tt)* }) =>
-        ((stringify!($name).into(), crate::semantics::Struct {
-            is_enum_variant: true,
-            ty: make_type!($ty$({$($gen)*}[$($gen)*])?),
-            fields: parse_named_fields!(;$($fields)*)
-        }))
+    ($name:path$({$($gen:tt)*})? ) =>
+        ((stringify!($name).into(), (
+            Rc::new(make_type!($name$({$($gen)*})?)),
+            Rc::new(Fields::None)
+        )));
+    ($name:ident $({$($gen:tt)*})? ( $($fields:tt)* )) =>
+        ((StringWrapper::Static(stringify!($name)), (
+            Rc::new(make_type!($name$({$($gen)*}[$($gen)*])?)),
+            Rc::new(crate::parse_unnamed_fields!(;$($fields)*,))
+        )));
+    ($name:path $({$($gen:tt)*})? { $($fields:tt)* }) =>
+        ((StringWrapper::Static(stringify!($name)), (
+            Rc::new(make_type!($name$({$($gen)*}[$($gen)*])?)),
+            Rc::new(parse_named_fields!(;$($fields)*))
+        )))
 }
 
 #[macro_export]
@@ -479,10 +490,10 @@ macro_rules! make_macro {
     ($ty:path$({$($gen:tt)*})?$([$($arg:tt)*])? : $name:ident($fn:expr)) => 
         (#($ty{$($gen)*}[$($arg)*]) : $name($fn));
     (#($($ty:tt)*) : $name:ident($fn:expr)) => {
-        (StringWrapper::from(stringify!($name)), Macro {
+        (StringWrapper::from(stringify!($name)), Rc::new(Macro {
             constructor: $fn,
             ty: crate::make_type!($($ty)*)
-        })
+        }))
     }
 }
 

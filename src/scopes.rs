@@ -6,8 +6,7 @@ use arbitrary::Arbitrary;
 use crate::context_arbitrary::c_arbitrary_iter_with_non_mut;
 use crate::semantics::*;
 use crate::string_wrapper::*;
-use crate::{make_var, make_type, make_kind, make_methods, make_trait, make_struct, make_macro};
-
+use crate::{make_var, make_type, make_kind, make_methods, make_trait, make_struct, make_enum, make_macro};
 
 
 
@@ -17,7 +16,7 @@ pub fn prelude_scope(use_panics: bool) -> Scope {
         owned: false,
         vars: vec![
             make_var!(drop: %Fn{T}(T)),
-        ].into_iter().map(|(k,v)| (StringWrapper::clone(&k), v)).collect(), 
+        ].into_iter().collect(), 
         types: [
             // make_kind!(Sized),
             // make_kind!(Sync),
@@ -140,15 +139,22 @@ pub fn prelude_scope(use_panics: bool) -> Scope {
                 Result{R: (Clone), E: (Clone)}[R,E]
             ))
         ].iter().cloned().collect(),
-        structs: [
-            make_struct!(:Option:None[T]),
-            make_struct!(:Maybe:Some[T](T)),
-            make_struct!(:Result:Ok[R,E](R)),
-            make_struct!(:Result:Err[R,E](E)),
-            make_struct!(:std::io::ErrorKind:std::io::ErrorKind::NotFound),
-            make_struct!(:std::io::ErrorKind:std::io::ErrorKind::PermissionDenied),
-            make_struct!(:std::io::ErrorKind:std::io::ErrorKind::ConnectionRefused),
-        ].iter().cloned().map(|(k,v)| (k, Rc::new(v))).collect(), 
+        structs: HashMap::new(),
+        enums: [
+            make_enum!(Result{R,E}: (
+                Ok(R),
+                Err(E)
+            )),
+            make_enum!(Option{T}: (
+                Some(T),
+                None
+            )),
+            make_enum!(std::io::ErrorKind: (
+                NotFound,
+                PermissionDenied,
+                ConnectionRefused,
+            ))
+        ].iter().cloned().collect(), 
         macros: {
             let mut macros = vec![
                 make_macro!(#(Vec{T}) : vec(|ty_args, ctx, u| {
@@ -175,7 +181,7 @@ pub fn prelude_scope(use_panics: bool) -> Scope {
                 })))
             }
             macros
-        }.into_iter().map(|(k,v)| (k, Rc::new(v))).collect(), 
+        }.into_iter().collect(), 
     };
     scope.make_ty_index();
     scope
@@ -219,8 +225,10 @@ pub fn primitive_scope() -> Scope {
             make_struct!((10;)),
             make_struct!((11;)),
             make_struct!((12;))
+        ].iter().cloned().collect(), 
+        enums: [
 
-        ].iter().cloned().map(|(k,v)| (k, Rc::new(v))).collect(), 
+        ].iter().cloned().collect(), 
         types: [
             make_kind!(bool),
             make_kind!(u8),
