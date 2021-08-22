@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashSet, HashMap};
 use std::cell::{RefCell, Cell};
 use std::rc::Rc;
 use std::env;
@@ -6,6 +6,7 @@ use std::env;
 use crate::semantics::{self, Stack, Scope, Operator, Lifetime};
 use crate::scopes::*;
 use crate::branching::Branches;
+use crate::string_wrapper::StringWrapper;
 
 
 pub struct Options {
@@ -27,6 +28,8 @@ impl Options {
         }
     }
 }
+#[derive(PartialEq, Clone, Copy)]
+pub enum RefType { Borrow, MoveOrMut }
 pub struct Context {
     /// Options passed from the command line
     pub options: Options,
@@ -106,8 +109,16 @@ pub struct Context {
     /// (Semantics only): The extra data required to keep track of branches. If not None,
     /// anytime a lifetime or the references a var has are changed we have to make sure 
     /// that the original value is saved so that it is possible to restore for other branches
-    pub branches: Option<RefCell<Branches>>
+    pub branches: Option<RefCell<Branches>>,
+    /// (Semantics only): In order to assure that, for example, a struct don't have two
+    /// fields with the same name, the struct can temporarily put field names here.
+    pub reserved_names: HashSet<StringWrapper>,
+    /// (Semantics only): A lifetime can't end if it's being used in an expression,
+    /// `foo(&bar, &mut bar)` is an error because there is no way to make the first
+    /// borrow short enough to prevent it from overlapping with the mutable one.
+    pub reserved_lts: RefCell<Vec<HashMap<Lifetime, RefType>>>
 }
+
 impl Context {
     pub fn make_context(options: Options) -> Context {
         let basic_scopes: Stack<Scope> = Rc::new([
@@ -123,6 +134,7 @@ impl Context {
                     lifetimes: HashMap::new(),
                     traits: HashMap::new(),
                     structs: HashMap::new(),
+                    enums: HashMap::new(),
                     macros: HashMap::new(),
                     methods: vec![],
                     by_ty_name: HashMap::new(),
@@ -138,7 +150,7 @@ impl Context {
             has_value: false,
             is_place_expression: false,
             named_fields: true,
-            is_top_level: false,
+            is_top_level: true,
             is_refutable: true,
             is_lifetime: false,
             allow_range: true,
@@ -159,7 +171,9 @@ impl Context {
             can_demand_additional_args: false,
             precomputed_final: None,
             size: Cell::new(0),
-            branches: None
+            branches: None,
+            reserved_names: HashSet::new(),
+            reserved_lts: RefCell::new(vec![])
         }
     }
 }
@@ -291,4 +305,10 @@ macro_rules! not_fn_block {
 #[macro_export]
 macro_rules! can_demand_args {
 ($ctx: ident, $e: expr) => (with_attrs!($ctx{ can_demand_additional_args = true }, $e))
+}
+
+#[macro_export]
+macro_rules! reserve_names {
+($ctx: ident, $e: expr) => (reserve_names!($ctx, std::collections::HashSet::new(), $e));
+($ctx: ident, $new: expr, $e: expr) => (with_attrs!($ctx{ reserved_names = $new }, $e))
 }

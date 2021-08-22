@@ -16,7 +16,7 @@ use rustsmith::syn_arbitrary::WrappedFile;
 fn main() -> Result<(), Box<dyn Error>> {
     let filename = env::args().nth(1).expect("Expected filename as arg");
     let mut buffer = vec![];
-    io::stdin().read_to_end(&mut buffer).unwrap();
+    io::stdin().read_to_end(&mut buffer)?;
     let ast = gen_code(buffer, Options::import_env())?;
     let ast_str = quote::quote!(#ast).to_string();
     fs::write(filename, ast_str)?;
@@ -40,6 +40,6 @@ where
     T: 'static + Send,
 {
     let builder = thread::Builder::new().stack_size(stack_space);
-    let handler = builder.spawn(closure).unwrap();
-    return handler.join().unwrap();
+    let handler = builder.spawn(closure).expect("Error creating thread");
+    return handler.join().expect("Error executing thread");
 }

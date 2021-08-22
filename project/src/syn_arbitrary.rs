@@ -66,7 +66,6 @@ macro_rules! parens_block {
 }
 
 fn parenthesize_expr(presc: u8, e: Expr) -> Expr {
-    // TODO: Make the code deal with left and right associative operators propperly
     let expr_presc = prescedence(&e);
     if expr_presc < presc {
         return Expr::Paren(ExprParen {
@@ -381,7 +380,6 @@ impl From<sem::Type> for syn::Type {
             })
         } else if let Some(func) = ty.func {
             syn::Type::BareFn(TypeBareFn {
-                // TODO: add more fields
                 lifetimes: None,
                 unsafety: None,
                 abi: None,
@@ -623,7 +621,7 @@ fn from_sem_expr(ctx: &Context, u: &mut Unstructured, ex: &sem::Expr) -> Result<
             syn::Expr::Macro(ExprMacro {
                 attrs: vec![],
                 mac: syn::Macro {
-                    path: parse_str(name.as_str()).unwrap(),
+                    path: make_path(name.as_str(), PathArguments::None),
                     bang_token: parse_quote!(!),
                     delimiter: match body.brackets {
                         BracketType::Round => MacroDelimiter::Paren(Default::default()),
@@ -703,6 +701,8 @@ fn extract_additional_args(ctx: &mut Context, u: &mut Unstructured, e: sem::Expr
     Ok(match e {
         sem::Expr::AdditionalArg(ty, mt) => {
             let ident = c_arbitrary(ctx, u)?;
+            // we don't want the argument to be shadowed by a local variable
+            ctx.reserved_names.insert(ident_to_name(&ident).into());
             let name = ident_to_name(&ident).into();
             (vec![(ident, mt, ty)], sem::Expr::Var(name))
         }
@@ -823,7 +823,7 @@ fn extract_additional_args(ctx: &mut Context, u: &mut Unstructured, e: sem::Expr
 fn from_sem_generics(
     _ctx: &mut Context, u: &mut Unstructured,
     lt_generics: &Vec<StringWrapper>,
-    type_generics: &sem::Generics
+    type_generics: &sem::TypeGenerics
 ) -> Result<Generics> {
     let is_empty = 
         lt_generics.len() + type_generics.len() == 0 &&
@@ -879,9 +879,12 @@ fn from_sem_generics(
 
 fn name_to_ident(u: &mut Unstructured, name: &str) -> Result<Ident> {
     if name.starts_with("r#") {
-        Ok(parse_str(name).unwrap())
+        Ok(parse_str(name).expect(format!("Unable to parse {} as ident", name).as_str()))
     } else if KWDS_STRICT.contains(name) || Arbitrary::arbitrary(u)? {
-        Ok(parse_str(format!("r#{}", name).as_str()).unwrap())
+        Ok(
+            parse_str(format!("r#{}", name).as_str())
+                .expect(format!("Unable to parse r#{} as ident", name).as_str())
+        )
     } else {
         Ok(Ident::new(name, dummy_span()))
     }
@@ -889,9 +892,10 @@ fn name_to_ident(u: &mut Unstructured, name: &str) -> Result<Ident> {
 
 fn name_to_ident_det(name: &str) -> Ident {
     if name.starts_with("r#") {
-        parse_str(name).unwrap()
+        parse_str(name).expect(format!("Unable to parse {} as ident", name).as_str())
     } else if KWDS_STRICT.contains(name) {
-        parse_str(format!("r#{}", name).as_str()).unwrap()
+        parse_str(format!("r#{}", name).as_str())
+            .expect(format!("Unable to parse r#{} as ident", name).as_str())
     } else {
         Ident::new(name, dummy_span())
     }
@@ -1006,9 +1010,12 @@ impl<'a> ContextArbitrary<'a, Context> for File {
         let attrs = crate_attrs(ctx, u)?;
         if ctx.regard_semantics && ctx.has_main {
             let main = Item::Fn(make_main(ctx, u)?);
-            items = iter::once(Ok(main))
-                .chain(c_arbitrary_iter(ctx, u))
-                .collect::<Result<Vec<syn::Item>>>()?;
+            reserve_names!(ctx, {
+                ctx.reserved_names.insert("main".into());
+                items = iter::once(Ok(main))
+                    .chain(c_arbitrary_iter(ctx, u))
+                    .collect::<Result<Vec<syn::Item>>>()?;
+            });
         } else {
             items = unwrap_nev(c_arbitrary(ctx, u)?);
         }
@@ -1086,11 +1093,13 @@ let (ret_ty, output) = lazy_choose!(u,  {
 
 impl<'a> ContextArbitrary<'a, Context> for Item {
     fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
-        let top_lev = !ctx.regard_semantics || ctx.is_top_level;
+        // let top_lev = !ctx.regard_semantics || ctx.is_top_level;
         not_top_level!(ctx, guarded_lazy_choose!(u,  {
             true => Item::Fn(c_arbitrary(ctx, u)?),
             !ctx.regard_semantics => Item::Type(c_arbitrary(ctx, u)?),
             !ctx.regard_semantics => Item::Trait(c_arbitrary(ctx, u)?),
+            !ctx.regard_semantics => Item::Const(c_arbitrary(ctx, u)?),
+            !ctx.regard_semantics => Item::Static(c_arbitrary(ctx, u)?),
             true => Item::Enum(c_arbitrary(ctx, u)?),
             true => Item::Struct(c_arbitrary(ctx, u)?),
             // TODO:
@@ -1101,15 +1110,21 @@ impl<'a> ContextArbitrary<'a, Context> for Item {
             // Union(ItemUnion),
             // Use(ItemUse),
             // Intentionally omitted: ExternCrate, ForeignMod, Macro, Verbatim
-            top_lev => Item::Static(c_arbitrary(ctx, u)?),
-            top_lev => Item::Const(c_arbitrary(ctx, u)?),
         }))
     }
 }
 
 impl<'a> ContextArbitrary<'a, Context> for ItemStruct {
     fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
-        let ident: Ident = c_arbitrary(ctx, u)?;
+        // We don't want structs shadowing each other since this can lead to 
+        // unconstructable types
+        let defined_structs = ctx.scopes.iter().flat_map(|s| s.structs.keys().cloned());
+        let mut new_reserved = ctx.reserved_names.clone();
+        new_reserved.extend(defined_structs);
+        let ident: Ident = reserve_names!(ctx, new_reserved, c_arbitrary(ctx, u)?);
+        if ctx.regard_semantics {
+            ctx.reserved_names.insert(ident_to_name(&ident).into());
+        }
         let generics;
         let vis = c_arbitrary(ctx, u)?;
         let fields: Fields;
@@ -1140,11 +1155,7 @@ impl<'a> ContextArbitrary<'a, Context> for ItemStruct {
             };
             let ty = kind_to_type(ident_to_name(&ident), &kind);
             let sem_fields = generate_sem_fields(ctx, u, is_pub(&vis), &ty, &lts, &tys)?;
-            add_struct(ctx, ident_to_name(&ident).into(), sem::Struct {
-                is_enum_variant: false,
-                ty: Rc::new(ty),
-                fields: sem_fields.clone()
-            });
+            add_struct(ctx, ident_to_name(&ident).into(), ty, Rc::new(sem_fields.clone()));
             fields = sem_fields.into();
         } else {
             generics = c_arbitrary(ctx, u)?;
@@ -1166,7 +1177,11 @@ impl<'a> ContextArbitrary<'a, Context> for ItemStruct {
 
 impl<'a> ContextArbitrary<'a, Context> for ItemEnum {
     fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
+        // TODO: enum shadowing
         let ident: Ident = c_arbitrary(ctx, u)?;
+        if ctx.regard_semantics {
+            ctx.reserved_names.insert(ident_to_name(&ident).into());
+        }
         let vis: Visibility = c_arbitrary(ctx, u)?;
         let variants: Punctuated<Variant, Token![,]>;
         let generics;
@@ -1183,31 +1198,34 @@ impl<'a> ContextArbitrary<'a, Context> for ItemEnum {
             // If the enum doesn't have any variants, don't add it to the types
             // because it won't be possible to construct it without cheating
             let mut type_added = false;
-            let fields = c_arbitrary_iter_with(ctx, u, |ctx, u| {
+            let fields = reserve_names!(ctx, c_arbitrary_iter_with(ctx, u, |ctx, u| {
                 if !type_added {
                     type_added = true;
                     add_type(ctx, ident_to_name(&ident).into(), kind.clone());
                 }
                 let name: Ident = c_arbitrary(ctx, u)?;
+                ctx.reserved_names.insert(ident_to_name(&name).into());
                 let fields = generate_sem_fields(ctx, u, is_pub(&vis), &ty, &lts, &tys)?;
                 Ok((name, fields))
-            }).collect::<Result<Vec<(Ident, sem::Fields)>>>()?;
+            }).collect::<Result<Vec<(Ident, sem::Fields)>>>()?);
             let mut local_variants = vec![];
+            let mut struc_map = HashMap::new();
             for (enum_ident, fields) in fields {
-                let name = format!("{}::{}", ident, enum_ident).into();
+                let prefixed_name = format!(
+                    "{}::{}",
+                    ident_to_name(&ident),
+                    ident_to_name(&enum_ident)
+                );
+                struc_map.insert(prefixed_name.into(), Rc::new(fields.clone()));
                 local_variants.push(syn::Variant {
-                    fields: remove_visibility(fields.clone().into()),
+                    fields: remove_visibility(fields.into()),
                     ident: enum_ident,
                     // TODO: add discriminants
                     discriminant: None,
                     attrs: vec![],
                 });
-                add_struct(ctx, name, sem::Struct {
-                    is_enum_variant: true,
-                    ty: Rc::new(ty.clone()),
-                    fields
-                });
             }
+            add_enum(ctx, ident_to_name(&ident).into(), ty.clone(), struc_map);
             variants = local_variants.into_iter().collect();
         } else {
             generics = c_arbitrary(ctx, u)?;
@@ -1300,9 +1318,12 @@ fn generate_sem_fields(
         })
     }).collect::<Result<Vec<sem::Field>>>()?;
     Ok(if Arbitrary::arbitrary(u)? {
-        sem::Fields::Named(fields.into_iter().map(|field| {
-            Ok((ident_to_name(&c_arbitrary(ctx, u)?).into(), field))
-        }).collect::<Result<HashMap<StringWrapper, sem::Field>>>()?)
+        let fields = reserve_names!(ctx, sem::Fields::Named(fields.into_iter().map(|field| {
+            let name: StringWrapper = ident_to_name(&c_arbitrary(ctx, u)?).into();
+            ctx.reserved_names.insert(name.clone());
+            Ok((name, field))
+        }).collect::<Result<HashMap<StringWrapper, sem::Field>>>()?));
+        fields
     } else {
         sem::Fields::Unnamed(fields)
     })
@@ -1471,11 +1492,9 @@ impl<'a> ContextArbitrary<'a, Context> for ItemStatic {
     fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
         Ok(ItemStatic {
             attrs: vec![],
-            // TODO: different visibilities
-            vis: Visibility::Inherited,
+            vis: c_arbitrary(ctx, u)?,
             static_token: parse_quote!(static),
-            // TODO: possible mutability
-            mutability: None,
+            mutability: maybe(u, parse_quote!(mut)),
             ident: c_arbitrary(ctx, u)?,
             colon_token: parse_quote!(:),
             ty: c_arbitrary(ctx, u)?,
@@ -1522,7 +1541,8 @@ impl<'a> ContextArbitrary<'a, Context> for ItemFn {
                 needs_new_scope = false,
                 allow_ambiguity = true,
                 expected_type = ret_type,
-                precomputed_final = final_expr
+                precomputed_final = final_expr,
+                reserved_names = HashSet::new()
             }, c_arbitrary(ctx, u)?);
             ctx.scopes = old_scope;
             add_var(ctx, ident_to_name(&sig.ident).into(), Variable::new(
@@ -1772,18 +1792,27 @@ fn type_with_sig(ctx: &mut Context, u: &mut Unstructured)
     let final_expr;
     let mut input_vec = vec![];
     let mut input_tys: Vec<sem::Type> = vec![];
+    let old_reserved = mem::replace(&mut ctx.reserved_names, HashSet::new());
     let mut lt_generics: Vec<StringWrapper> = c_arbitrary_iter_with(ctx, u, |ctx, u| {
-        Ok(ident_to_name(&c_arbitrary::<Context,Lifetime>(ctx, u)?.ident).into())
+        let name: StringWrapper =
+            ident_to_name(&c_arbitrary::<Context,Lifetime>(ctx, u)?.ident).into();
+        ctx.reserved_names.insert(name.clone());
+        Ok(name)
     }).collect::<Result<Vec<_>>>()?;
+    // needed later in case the output contains an lt
+    let reserved_lts = mem::replace(&mut ctx.reserved_names, old_reserved);
     let mut output_ty;
     // TODO: handle constraints
-    let type_generics = c_arbitrary_iter_with(ctx, u, |ctx, u| {
+    let type_generics = reserve_names!(ctx, c_arbitrary_iter_with(ctx, u, |ctx, u| {
+        let name: StringWrapper =
+            ident_to_name(&c_arbitrary::<Context, Ident>(ctx, u)?).into();
+        ctx.reserved_names.insert(name.clone());
         Ok(Generic {
-            name: ident_to_name(&c_arbitrary::<Context, Ident>(ctx, u)?).into(),
+            name,
             constraints: vec![],
             is_arg_for_other: false 
         })
-    }).collect::<Result<sem::Generics>>()?;
+    }).collect::<Result<sem::TypeGenerics>>()?);
     for gen in type_generics.iter() {
         add_type(ctx, gen.name.clone(), sem::Kind {
             is_visible: false,
@@ -1832,7 +1861,10 @@ fn type_with_sig(ctx: &mut Context, u: &mut Unstructured)
 
     output_ty = pick_type(ctx, u)?;
     if output_ty.needs_lt() {
-        let lt_ident: Ident = lifetime!(ctx, c_arbitrary(ctx, u)?);
+        let lt_ident: Ident = reserve_names!(
+            ctx, reserved_lts,
+            lifetime!(ctx, c_arbitrary(ctx, u)?)
+        );
         let ident_name: StringWrapper = ident_to_name(&lt_ident).into();
         lt_generics.push(ident_name.clone());
         let wrapped_lts = lt_generics.iter().map(|n| sem::Lifetime::Named(n.clone())).collect();
@@ -1901,6 +1933,11 @@ fn type_with_sig(ctx: &mut Context, u: &mut Unstructured)
         where_clause: None
     };
 
+    let ident = c_arbitrary(ctx, u)?;
+    if ctx.regard_semantics {
+        ctx.reserved_names.insert(ident_to_name(&ident).into());
+    }
+
     Ok((sem::Type {
         name: "#Fn".into(),
         // TODO: generate lifetimes
@@ -1919,7 +1956,7 @@ fn type_with_sig(ctx: &mut Context, u: &mut Unstructured)
         unsafety: None,
         abi: None,
         fn_token: parse_quote!(fn),
-        ident: c_arbitrary(ctx, u)?,
+        ident,
         generics,
         paren_token: Paren { span: dummy_span() },
         inputs,
@@ -3049,12 +3086,12 @@ impl<'a> ContextArbitrary<'a, Context> for ExprBinary {
 
 impl<'a> ContextArbitrary<'a, Context> for BinOp {
     fn c_arbitrary(_ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
-lazy_choose!(u,  {
-    parse_quote!(+),
-    parse_quote!(*),
-    parse_quote!(/),
-    parse_quote!(%),
-    parse_quote!(-),
+        lazy_choose!(u,  {
+            parse_quote!(+),
+            parse_quote!(*),
+            parse_quote!(/),
+            parse_quote!(%),
+            parse_quote!(-),
         })
     }
 }
@@ -3330,7 +3367,8 @@ impl<'a> ContextArbitrary<'a, Context> for Ident {
             name.push(char);
         }
         // Lifetimes can't have raw variables, so we can't just make it a raw variable if it is a keyword
-        while ctx.is_lifetime && (KWDS_STRICT.contains(&&name[..]) || name == "static") {
+        while ctx.reserved_names.contains(&name.clone().into()) || 
+            ctx.is_lifetime && (KWDS_STRICT.contains(&&name[..]) || name == "static") {
             let char = *u.choose(rest_chars)?;
             name.push(char);
         }
