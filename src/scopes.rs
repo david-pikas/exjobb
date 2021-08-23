@@ -72,9 +72,9 @@ pub fn prelude_scope(use_panics: bool) -> Scope {
             make_methods!(#(Vec{T: (Clone)}) {
                 resize(&mut self, usize, T),
             }),
-            make_methods!(std::io::Error {
-                new{E: (IntoError)}(std::io::ErrorKind, E) -> std::io::Error
-            }),
+            // make_methods!(std::io::Error {
+            //     new{E: (IntoError)}(std::io::ErrorKind, E) -> std::io::Error
+            // }),
             make_methods!(% #(ToString) {
                 to_string(self) -> String 
             }),

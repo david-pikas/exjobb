@@ -377,24 +377,24 @@ macro_rules! make_enum {
     ($name:path$({$($gen:tt)*})?: ($($structs:tt)*)) => (
         (StringWrapper::Static(stringify!($name)), (
             Rc::new(make_type!($name$({$($gen)*})?)),
-            crate::parse_structs!($name;;$($structs)*,)
+            crate::parse_structs!(;$($structs)*,)
         ))
     )
 }
 
 #[macro_export]
 macro_rules! parse_structs {
-    ($prefix:path;$(,$structs:expr)*;$(,)?) =>
+    ($(,$structs:expr)*;$(,)?) =>
         (vec![$($structs,)*].into_iter().collect::<HashMap<_,_>>());
-    ($prefix:path;$(,$structs:expr)*;$name:ident, $($rest:tt)*) => {
-        crate::parse_structs!($prefix;$(,$structs)*, (
-            StringWrapper::from(format!("{}::{}", stringify!($prefix), stringify!($name))),
+    ($(,$structs:expr)*;$name:ident, $($rest:tt)*) => {
+        crate::parse_structs!($(,$structs)*, (
+            StringWrapper::from(stringify!($name)),
             Rc::new(crate::semantics::Fields::None)
         );$($rest)*)
     };
-    ($prefix:path;$(,$structs:expr)*;$name:ident($($args:tt)*), $($rest:tt)*) => {
-        crate::parse_structs!($prefix;$(,$structs)*, (
-            StringWrapper::from(format!("{}::{}", stringify!($prefix), stringify!($name))),
+    ($(,$structs:expr)*;$name:ident($($args:tt)*), $($rest:tt)*) => {
+        crate::parse_structs!($(,$structs)*, (
+            StringWrapper::from(stringify!($name)),
             Rc::new(crate::parse_unnamed_fields!(;$($args)*,))
         );$($rest)*)
     }
