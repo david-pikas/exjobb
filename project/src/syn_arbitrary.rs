@@ -486,37 +486,40 @@ impl From<sem::Fields> for syn::Fields {
 
 fn from_sem_expr(ctx: &Context, u: &mut Unstructured, ex: &sem::Expr) -> Result<Expr> {
     Ok(match ex {
-        sem::Expr::Lit(name, type_args) => match name.as_str() {
-            "usize" => lit_of_type!(u, usize),
-            "u8"    => lit_of_type!(u, u8),
-            "u16"   => lit_of_type!(u, u16),
-            "u32"   => lit_of_type!(u, u32),
-            "u64"   => lit_of_type!(u, u64),
-            "u128"  => lit_of_type!(u, u128),
-            "i8"    => lit_of_type!(u, i8),
-            "i16"   => lit_of_type!(u, i16),
-            "i32"   => lit_of_type!(u, i32),
-            "i64"   => lit_of_type!(u, i64),
-            "i128"  => lit_of_type!(u, i128),
-            "char"  => lit_of_type!(u, char),
-            "str"   => lit_of_type!(u, &str),
-            "bool"  => lit_of_type!(u, bool),
-            "#Unit" => Expr::Tuple(ExprTuple {
-                attrs: vec![],
-                paren_token: Paren { span: dummy_span() },
-                elems: iter::empty::<Expr>().collect()
-            }),
-            s if s.starts_with("#") => panic!("Unhandled special type {}", s),
-            _ => Expr::Path(ExprPath {
-                attrs: vec![],
-                qself: None,
-                path: make_turbofish_path(name.as_str(), type_args.clone())
-            })
+        sem::Expr::Lit(path, type_args) => {
+            let name = path.first().expect("Empty path");
+            match path.first().unwrap().as_str() {
+                "usize" => lit_of_type!(u, usize),
+                "u8"    => lit_of_type!(u, u8),
+                "u16"   => lit_of_type!(u, u16),
+                "u32"   => lit_of_type!(u, u32),
+                "u64"   => lit_of_type!(u, u64),
+                "u128"  => lit_of_type!(u, u128),
+                "i8"    => lit_of_type!(u, i8),
+                "i16"   => lit_of_type!(u, i16),
+                "i32"   => lit_of_type!(u, i32),
+                "i64"   => lit_of_type!(u, i64),
+                "i128"  => lit_of_type!(u, i128),
+                "char"  => lit_of_type!(u, char),
+                "str"   => lit_of_type!(u, &str),
+                "bool"  => lit_of_type!(u, bool),
+                "#Unit" => Expr::Tuple(ExprTuple {
+                    attrs: vec![],
+                    paren_token: Paren { span: dummy_span() },
+                    elems: iter::empty::<Expr>().collect()
+                }),
+                s if s.starts_with("#") => panic!("Unhandled special type {}", s),
+                _ => Expr::Path(ExprPath {
+                    attrs: vec![],
+                    qself: None,
+                    path: make_turbofish_path(&vec![name.clone()], type_args.clone())
+                })
+            }
         }
-        sem::Expr::Struct(name, type_args, fields) => {
+        sem::Expr::Struct(path, type_args, fields) => {
             Expr::Struct(ExprStruct {
                 attrs: vec![],
-                path: make_turbofish_path(name.as_str(), type_args.clone()),
+                path: make_turbofish_path(&path, type_args.clone()),
                 brace_token: Brace { span: dummy_span() },
                 fields: fields.iter().map(|(name, val)| {
                     Ok(FieldValue {
@@ -531,7 +534,7 @@ fn from_sem_expr(ctx: &Context, u: &mut Unstructured, ex: &sem::Expr) -> Result<
             })
         }
         sem::Expr::Field(reciever, name) => {
-            let member = name.as_str().parse().map_or_else(
+            let member = name.as_str().parse::<u32>().map_or_else(
                 |_| Member::Named(name_to_ident_det(name.as_str())),
                 |n| Member::Unnamed(Index {
                         index: n,
@@ -573,8 +576,8 @@ fn from_sem_expr(ctx: &Context, u: &mut Unstructured, ex: &sem::Expr) -> Result<
             Expr::Call(ExprCall {
                 attrs: vec![],
                 func: {
-                    let ty_path = make_turbofish_path(ty.as_str(), ty_args.clone());
-                    let fn_path = make_turbofish_path(name.as_str(), fn_type_args.clone());
+                    let ty_path = make_turbofish_path(&ty, ty_args.clone());
+                    let fn_path = make_turbofish_path(&vec![name.clone()], fn_type_args.clone());
                     Box::new(Expr::Path(ExprPath{
                         qself: None,
                         attrs: vec![],
@@ -621,7 +624,7 @@ fn from_sem_expr(ctx: &Context, u: &mut Unstructured, ex: &sem::Expr) -> Result<
             syn::Expr::Macro(ExprMacro {
                 attrs: vec![],
                 mac: syn::Macro {
-                    path: make_path(name.as_str(), PathArguments::None),
+                    path: make_path(&name, PathArguments::None),
                     bang_token: parse_quote!(!),
                     delimiter: match body.brackets {
                         BracketType::Round => MacroDelimiter::Paren(Default::default()),
@@ -632,7 +635,8 @@ fn from_sem_expr(ctx: &Context, u: &mut Unstructured, ex: &sem::Expr) -> Result<
                 }
             })
         }
-        sem::Expr::Fn(name, type_args, args) => {
+        sem::Expr::Fn(path, type_args, args) => {
+            let name = path.first().expect("Empty path");
             if name.starts_with("#Tuple") {
                 // println!("{:?}", args);
                 Expr::Tuple(ExprTuple {
@@ -646,7 +650,7 @@ fn from_sem_expr(ctx: &Context, u: &mut Unstructured, ex: &sem::Expr) -> Result<
                     attrs: vec![],
                     func: Box::new(Expr::Path(ExprPath {
                         attrs: vec![],
-                        path: make_turbofish_path(name.as_str(), type_args.clone()),
+                        path: make_turbofish_path(&path, type_args.clone()),
                         qself: None
                     })),
                     paren_token: Paren { span: dummy_span() },
@@ -655,7 +659,11 @@ fn from_sem_expr(ctx: &Context, u: &mut Unstructured, ex: &sem::Expr) -> Result<
                 })
             }
         }
-        sem::Expr::Var(name) => Expr::Path(parse_str(name.as_str()).expect(format!("Couldn't parse {}", name.as_str()).as_str())),
+        sem::Expr::Var(path) => Expr::Path(ExprPath {
+            attrs: vec![],
+            qself: None,
+            path: make_path(&path, PathArguments::None),
+        }),
         sem::Expr::ExactString(str) => Expr::Lit(ExprLit {
             attrs: vec![],
             lit: Lit::Str(LitStr::new(str.as_str(), dummy_span()))
@@ -704,7 +712,7 @@ fn extract_additional_args(ctx: &mut Context, u: &mut Unstructured, e: sem::Expr
             // we don't want the argument to be shadowed by a local variable
             ctx.reserved_names.insert(ident_to_name(&ident).into());
             let name = ident_to_name(&ident).into();
-            (vec![(ident, mt, ty)], sem::Expr::Var(name))
+            (vec![(ident, mt, ty)], sem::Expr::Var(vec![name]))
         }
         sem::Expr::Struct(name, ty_args, fields) => {
             let init: Result<(_, Vec<(StringWrapper, sem::Expr)>)> = 
@@ -910,16 +918,16 @@ fn ident_to_name(ident: &Ident) -> String {
     }
 }
 
-fn make_path(name: &str, path_args: PathArguments) -> syn::Path {
+fn make_path(name: &sem::Path, path_args: PathArguments) -> syn::Path {
     let mut segments_vec = vec![];
-    let mut segments_iter = name.split("::").collect::<Vec<&str>>().into_iter();
+    let mut segments_iter = name.into_iter();
     let last_segment = PathSegment {
-        ident: name_to_ident_det(segments_iter.next_back().unwrap()),
+        ident: name_to_ident_det(segments_iter.next_back().unwrap().as_str()),
         arguments: path_args
     };
     for seg in segments_iter {
         segments_vec.push(PathSegment {
-            ident: name_to_ident_det(seg),
+            ident: name_to_ident_det(seg.as_str()),
             arguments: PathArguments::None
         })
     }
@@ -934,7 +942,7 @@ fn make_path(name: &str, path_args: PathArguments) -> syn::Path {
 
 }
 
-fn make_turbofish_path(name: &str, args: Vec<sem::Type>) -> syn::Path {
+fn make_turbofish_path(name: &sem::Path, args: Vec<sem::Type>) -> syn::Path {
     let path_args = if args.is_empty() {
         PathArguments::None
     } else {
@@ -971,7 +979,7 @@ fn make_type_path(ty: sem::Type) -> syn::Path {
         })
 
     };
-    make_path(name.as_str(), path_args)
+    make_path(&vec![name], path_args)
 
 }
 
@@ -1055,8 +1063,8 @@ fn make_main<'a>(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<ItemFn> 
 let (ret_ty, output) = lazy_choose!(u,  {
     (make_type!(()), ReturnType::Default),
     (make_type!(()), ReturnType::Type(parse_quote!(->), parse_quote!(()))),
-    (make_type!(Result[#(()), std::io::Error]),
-        ReturnType::Type(parse_quote!(->), parse_quote!(Result<(), std::io::Error>))),
+    // (make_type!(Result[#(()), std::io::Error]),
+    //     ReturnType::Type(parse_quote!(->), parse_quote!(Result<(), std::io::Error>))),
     })?;
     let sig = Signature {
         constness: None,
@@ -1211,12 +1219,7 @@ impl<'a> ContextArbitrary<'a, Context> for ItemEnum {
             let mut local_variants = vec![];
             let mut struc_map = HashMap::new();
             for (enum_ident, fields) in fields {
-                let prefixed_name = format!(
-                    "{}::{}",
-                    ident_to_name(&ident),
-                    ident_to_name(&enum_ident)
-                );
-                struc_map.insert(prefixed_name.into(), Rc::new(fields.clone()));
+                struc_map.insert(ident_to_name(&enum_ident).into(), Rc::new(fields.clone()));
                 local_variants.push(syn::Variant {
                     fields: remove_visibility(fields.into()),
                     ident: enum_ident,

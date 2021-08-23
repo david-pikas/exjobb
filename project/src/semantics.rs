@@ -366,7 +366,7 @@ impl Scope {
         for (name, is_enum_variant, struc_ty, struc) in enums_and_structs {
             self.by_ty_name.entry(struc_ty.name.clone())
                 .or_insert(Default::default())
-                .structs.insert(name.clone(), (struc_ty.clone(), struc.clone()));
+                .structs.insert(vec![name.clone()], (struc_ty.clone(), struc.clone()));
             for (name, field) in struc.iter() {
                 if !is_enum_variant && !struc_ty.name.starts_with("#Tuple") {
                     if field.ty.is_generic_with(&struc_ty.type_generics).is_some() {
@@ -437,7 +437,7 @@ impl Scope {
 #[derive(Clone, Debug, Default)]
 pub struct TypeIndexed {
     pub vars: HashMap<StringWrapper, Rc<Variable>>,
-    pub structs: HashMap<StringWrapper, (Rc<Type>, Struct)>,
+    pub structs: HashMap<Path, (Rc<Type>, Struct)>,
     pub macros: HashMap<StringWrapper, Rc<Macro>>,
     pub fields: Vec<(Rc<Type>, Rc<Type>, StringWrapper)>,
     pub methods: Vec<(Either<Rc<Type>, TraitDescription>, Rc<Method>)>,
@@ -480,18 +480,19 @@ impl<T> FromIterator<T> for RcList<T> {
         }   
     }
 }
+pub type Path = Vec<StringWrapper>;
 #[derive(PartialEq, Clone, Debug)]
 pub enum Expr {
-    Lit(StringWrapper, Vec<Type>),
-    Struct(StringWrapper, Vec<Type>, HashMap<StringWrapper, Expr>),
-    Fn(StringWrapper, Vec<Type>, Vec<Expr>),
-    AssocFn(StringWrapper, Vec<Type>, StringWrapper, Vec<Type>, Vec<Expr>),
+    Lit(Path, Vec<Type>),
+    Struct(Path, Vec<Type>, HashMap<StringWrapper, Expr>),
+    Fn(Path, Vec<Type>, Vec<Expr>),
+    AssocFn(Path, Vec<Type>, StringWrapper, Vec<Type>, Vec<Expr>),
     Method(Box<Expr>, StringWrapper, Vec<Type>, Vec<Expr>),
-    Var(StringWrapper),
+    Var(Path),
     UnOp(&'static str, Box<Expr>),
     BinOp(&'static str, Box<Expr>, Box<Expr>),
     Field(Box<Expr>, StringWrapper),
-    Macro(StringWrapper, MacroBody),
+    Macro(Path, MacroBody),
     ExactString(String),
     AdditionalArg(Type, Mutability)
 }
@@ -874,7 +875,7 @@ pub fn add_struct(ctx: &mut Context, name: StringWrapper, ty: Type, struc: Struc
         }
         l.by_ty_name.entry(rc_ty.name.clone())
             .or_insert(Default::default())
-            .structs.insert(name.clone(), (rc_ty.clone(), struc.clone()));
+            .structs.insert(vec![name.clone()], (rc_ty.clone(), struc.clone()));
         l.structs.insert(name, (rc_ty, struc));
     });
 }
@@ -885,7 +886,7 @@ pub fn add_enum(ctx: &mut Context, name: StringWrapper, ty: Type, strucs: HashMa
         for (variant_name, struc) in strucs.iter() {
             l.by_ty_name.entry(rc_ty.name.clone())
                 .or_insert(Default::default())
-                .structs.insert(variant_name.clone(), (rc_ty.clone(), struc.clone()));
+                .structs.insert(vec![name.clone(), variant_name.clone()], (rc_ty.clone(), struc.clone()));
         }
         l.enums.insert(name, (rc_ty, strucs));
     });
@@ -1347,7 +1348,7 @@ pub fn construct_value_inner<'a>(
     }
 
     enum PossibleExpression<'a> {
-        Struct(&'a StringWrapper, &'a Rc<Type>, &'a Struct),
+        Struct(&'a Path, &'a Rc<Type>, &'a Struct),
         Var(&'a StringWrapper, &'a Rc<Variable>),
         Fn(&'a StringWrapper, &'a Type, &'a Func),
         Method(&'a Method, &'a Either<Rc<Type>, TraitDescription>),
@@ -1399,11 +1400,11 @@ pub fn construct_value_inner<'a>(
                     }
                 );
 
-        for (name, (struc_ty, struc)) in structs {
+        for (path, (struc_ty, struc)) in structs {
             // NOTE: structs are always allowed, because otherwise some 
             // things might not be constructable
             if struc_ty.matches(&ty) {
-                possible_exprs.push(PossibleExpression::Struct(name, struc_ty, struc));
+                possible_exprs.push(PossibleExpression::Struct(path, struc_ty, struc));
             }
         }
         let mut seen_vars = HashSet::new();
@@ -1491,7 +1492,7 @@ pub fn construct_value_inner<'a>(
     }
     let choice = choose_consume(u, possible_exprs.into_iter())?;
     let result = match choice {
-        PossibleExpression::Struct(name, struc_ty, struc) => {
+        PossibleExpression::Struct(path, struc_ty, struc) => {
             let determined_fields = make_struct_generics(
                 u, 
                 allow_ambiguity,
@@ -1515,7 +1516,7 @@ pub fn construct_value_inner<'a>(
                         args.push((name, construct_value_inner(ctx, u, arg, arg_ambigous, Own)?));
                     }
                     Ok(Expr::Struct(
-                        name.clone(),
+                        path.clone(),
                         if determined_fields.is_none() {
                             ty.type_args.clone()
                         } else {
@@ -1533,7 +1534,7 @@ pub fn construct_value_inner<'a>(
                         // Tuples can't have their generics specified so they
                         // always have the same ambiguity on their arguments
                         // as the tuple as a whole
-                        let arg_ambigous = if name.starts_with("#Tuple") {
+                        let arg_ambigous = if path.first().unwrap().starts_with("#Tuple") {
                             allow_ambiguity
                         } else {
                             determined_fields.as_ref().map_or(true,
@@ -1543,7 +1544,7 @@ pub fn construct_value_inner<'a>(
                         args.push(construct_value_inner(ctx, u, arg, arg_ambigous, Own)?);
                     }
                     Ok(Expr::Fn(
-                        name.clone(),
+                        path.clone(),
                         if determined_fields.is_none() {
                             ty.type_args.clone()
                         } else {
@@ -1552,7 +1553,7 @@ pub fn construct_value_inner<'a>(
                         args
                     ))
                 }
-                Fields::None => Ok(Expr::Lit(name.clone(), ty.type_args.clone()))
+                Fields::None => Ok(Expr::Lit(path.clone(), ty.type_args.clone()))
             }
         }
         PossibleExpression::Var(name, var) => {
@@ -1568,7 +1569,7 @@ pub fn construct_value_inner<'a>(
                     var.mut_borrow(ctx, lt)
                 }
             }
-            Ok(Expr::Var(name.to_owned()))
+            Ok(Expr::Var(vec![name.to_owned()]))
         }
         PossibleExpression::Fn(name, fn_ty, func) => {
             let mut args = vec![];
@@ -1601,7 +1602,7 @@ pub fn construct_value_inner<'a>(
             } else {
                 vec![]
             };
-            Ok(Expr::Fn(name.clone(), given_ty_args, args))
+            Ok(Expr::Fn(vec![name.clone()], given_ty_args, args))
         }
         PossibleExpression::Field(struc_ty, field_ty, name) => {
             let required_args_map: HashMap<_,_> = field_ty.diff(&ty).collect(); 
@@ -1716,7 +1717,7 @@ pub fn construct_value_inner<'a>(
                 ))
             } else {
                 Ok(Expr::AssocFn(
-                    assoc_ty.name.clone(),
+                    vec![assoc_ty.name.clone()],
                     disc_ty_args,
                     method.name.clone(),
                     given_ty_args,
@@ -1727,7 +1728,7 @@ pub fn construct_value_inner<'a>(
 
         PossibleExpression::Macro(name, macr) => {
             let body = (macr.constructor)(ty.type_args, ctx, u)?;
-            Ok(Expr::Macro(name.clone(), body))
+            Ok(Expr::Macro(vec![name.clone()], body))
         }
         
         PossibleExpression::Op(name, op) => {
@@ -1832,7 +1833,7 @@ pub fn name_to_type<S: Into<StringWrapper>>(name: S) -> Type {
 
 fn report_unconstructable_variable(ty: Type) -> Expr {
     println!("Couldn't find value of type {}", ty);
-    Expr::Macro("compile_error".into(), MacroBody {
+    Expr::Macro(vec!["compile_error".into()], MacroBody {
         brackets: BracketType::Round,
         seperator: Seperator::Comma,
         tokens: vec![Token::Expr(Expr::ExactString(format!("Couldn't find value of type {}", ty)))]
