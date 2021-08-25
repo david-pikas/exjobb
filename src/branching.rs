@@ -3,8 +3,7 @@
 use std::collections::hash_map;
 use std::mem;
 use std::{collections::HashMap, rc::Rc};
-use crate::semantics::{Refs, Variable, LtRefs, Lifetime};
-use crate::string_wrapper::StringWrapper;
+use crate::semantics::{Refs, Variable, LtRefs, Lifetime, Path};
 use crate::context::Context;
 
 
@@ -34,7 +33,7 @@ pub struct VarFinal {
 // TODO: handle scoping
 pub struct Branches {
     lt_reset: HashMap<Lifetime, LtReset>,
-    var_reset: HashMap<StringWrapper, VarReset>,
+    var_reset: HashMap<Path, VarReset>,
     branches: Vec<Branch>
 }
 
@@ -120,7 +119,7 @@ impl Branches {
 // TODO: handle scoping
 pub struct Branch {
     lts: HashMap<Lifetime, LtFinal>,
-    vars: HashMap<StringWrapper, VarFinal>
+    vars: HashMap<Path, VarFinal>
 }
 
 #[macro_export]
@@ -150,7 +149,7 @@ pub fn save_lt(ctx: &Context, lt_refs: &LtRefs, lt: Lifetime) {
     });
 }
 
-pub fn save_var(ctx: &Context, var: &Rc<Variable>, name: StringWrapper) {
+pub fn save_var(ctx: &Context, var: &Rc<Variable>, name: Path) {
     ctx.branches.as_ref().map(|bcell| {
         let mut b = bcell.borrow_mut();
         b.var_reset.entry(name).or_insert_with(|| {

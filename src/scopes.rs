@@ -72,9 +72,9 @@ pub fn prelude_scope(use_panics: bool) -> Scope {
             make_methods!(#(Vec{T: (Clone)}) {
                 resize(&mut self, usize, T),
             }),
-            // make_methods!(std::io::Error {
-            //     new{E: (IntoError)}(std::io::ErrorKind, E) -> std::io::Error
-            // }),
+            make_methods!(std::io::Error {
+                new{E: (IntoError)}(std::io::ErrorKind, E) -> std::io::Error
+            }),
             make_methods!(% #(ToString) {
                 to_string(self) -> String 
             }),
@@ -258,7 +258,7 @@ pub fn primitive_scope() -> Scope {
             // make_kind!((12;)),
             make_kind!(&),
             make_kind!(&mut),
-            ("!".into(), Kind { is_visible: true, lifetimes: 0, types: 0 })
+            (vec!["!".into()], Kind { is_visible: true, lifetimes: 0, types: 0 })
         ].iter().cloned().collect(),
         lifetimes: HashMap::new(),
         traits: HashMap::new(),

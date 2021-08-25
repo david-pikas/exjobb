@@ -8,7 +8,7 @@ pub static TUPLE_NAMES: [&'static str; 12] = [
 #[macro_export]
 macro_rules! make_var {
     ($name:path : $($ty:tt)*) =>
-        ((stringify!($name).into(), Rc::new(Variable::new(
+        ((crate::parse_path!($name), Rc::new(Variable::new(
             crate::make_type!($($ty)*), crate::semantics::Mutability::Immutable,
             crate::semantics::Lifetime::Named("'static".into())
         ))))
@@ -17,7 +17,7 @@ macro_rules! make_var {
 #[macro_export]
 macro_rules! make_type {
     (!) => (crate::semantics::Type {
-        name: "!".into(),
+        name: vec!["!".into()],
         lt_generics: vec![],
         type_generics: vec![],
         lt_args: vec![],
@@ -26,7 +26,7 @@ macro_rules! make_type {
         is_visible: true
     });
     (*& $($rest:tt)*) => (crate::semantics::Type {
-        name: "#RefMut".into(),
+        name: vec!["#RefMut".into()],
         ..crate::make_type!(& $($rest)*)
     });
     (& #($($ty:tt)*)) => (crate::make_type!(& {'a} 'a $($ty)*));
@@ -39,7 +39,7 @@ macro_rules! make_type {
     (& {$($gen:tt)*} $lt:lifetime $($ty:tt)*) => ({
         let (lt_generics, type_generics): (Vec<StringWrapper>, Vec<Generic>) = crate::parse_generics!([],[];$($gen)*,);
         crate::semantics::Type {
-            name: "#Ref".into(),
+            name: vec!["#Ref".into()],
             lt_generics, type_generics,
             lt_args: vec![crate::semantics::Lifetime::Named(
                 stringify!($lt).into()
@@ -65,7 +65,7 @@ macro_rules! make_type {
                 arg.type_generics.extend(type_generics.clone());
             }
             crate::semantics::Type {
-                name: "#Fn".into(),
+                name: vec!["#Fn".into()],
                 lt_generics, type_generics,
                 lt_args: vec![],
                 type_args: vec![],
@@ -78,7 +78,7 @@ macro_rules! make_type {
         }
     };
     ($name:path$({})?$([])?) => (crate::semantics::Type {
-        name: stringify!($name).into(),
+        name: crate::parse_path!($name),
         lt_generics: vec![],
         type_generics: vec![],
         lt_args: vec![],
@@ -87,7 +87,7 @@ macro_rules! make_type {
         is_visible: true,
     });
     (()) => (crate::semantics::Type {
-        name: "#Unit".into(),
+        name: vec!["#Unit".into()],
         lt_generics: vec![],
         type_generics: vec![],
         lt_args: vec![],
@@ -96,7 +96,7 @@ macro_rules! make_type {
         is_visible: true
     });
     (($len:expr; $fst:expr $(,$rest:expr)*)) => (crate::semantics::Type {
-        name: crate::ty_macros::TUPLE_NAMES[len-1].into(),
+        name: vec![crate::ty_macros::TUPLE_NAMES[len-1].into()],
         mutability: crate::semantics::Mutability::Immutable,
         lt_generics: vec![],
         type_generics: [
@@ -114,7 +114,7 @@ macro_rules! make_type {
             let (lt_generics, type_generics) = crate::parse_generics!([],[];$($gen)*,);
             let (lt_args, type_args) = crate::parse_args!([],[];$($args)*,);
             crate::semantics::Type {
-                name: stringify!($name).into(),
+                name: crate::parse_path!($name),
                 lt_generics, type_generics,
                 lt_args, type_args,
                 func: None,
@@ -122,6 +122,16 @@ macro_rules! make_type {
             }
         }
     };
+}
+
+#[macro_export]
+macro_rules! parse_path {
+    ($p:path) => (stringify!($p).split("::").map(StringWrapper::from).collect::<Vec<_>>())
+    // ($init:ident$(::$segment:ident)*) =>
+    //     (vec![
+    //         StringWrapper::from(stringify!($init))
+    //         $(StringWrapper::from(stringify!($segment)),)*
+    //     ])
 }
 
 #[macro_export]
@@ -189,7 +199,7 @@ macro_rules! parse_generics {
 macro_rules! parse_trait_desc {
     ($name:path$({$($trait_gen:ident),*})?) => {
         crate::semantics::TraitDescription {
-            name: stringify!($name).into(),
+            name: crate::parse_path!($name),
             trait_generics: crate::parse_trait_generics!(;$($($trait_gen)*)?,)
         }
     }
@@ -217,7 +227,7 @@ macro_rules! parse_constraints {
 macro_rules! parse_constraint {
     ($name:path$([$($args:tt)*])?) => ({
         crate::semantics::Constraint {
-            trait_name: stringify!($name).into(),
+            trait_name: crate::parse_path!($name),
             trait_args: crate::parse_types!(;$($($args)*)?,)
         }
     })
@@ -228,36 +238,36 @@ macro_rules! make_kind {
     ($name:path$({})?) => (make_kind!($name{0;0}));
         
     ($name:path{$ty:expr}) => {
-        (stringify!($name).into(), crate::semantics::Kind {
+        (crate::parse_path!($name), crate::semantics::Kind {
             is_visible: true,
             lifetimes: 0,
             types: $ty
         })
     };
-    (&mut) => (("#RefMut".into(), crate::semantics::Kind {
+    (&mut) => ((vec![StringWrapper::from("#RefMut")], crate::semantics::Kind {
         is_visible: true,
         lifetimes: 1,
         types: 1
     }));
-    (&) => (("#Ref".into(), crate::semantics::Kind {
+    (&) => ((vec![StringWrapper::from("#Ref")], crate::semantics::Kind {
         is_visible: true,
         lifetimes: 1,
         types: 1
     }));
-    (()) => (("#Unit".into(), crate::semantics::Kind {
+    (()) => ((vec![StringWrapper::from("#Unit")], crate::semantics::Kind {
         is_visible: true,
         lifetimes: 0,
         types: 0
     }));
     (($len:expr;)) => {
-        (crate::ty_macros::TUPLE_NAMES[$len-1].into(), crate::semantics::Kind {
+        (vec![StringWrapper::from(crate::ty_macros::TUPLE_NAMES[$len-1])], crate::semantics::Kind {
             is_visible: true,
             lifetimes: 0,
             types: $len
         })
     };
     ($name:path{$lt:expr; $ty:expr}) => {
-        (stringify!($name).into(), Kind {
+        (crate::parse_path!($name), Kind {
             is_visible: true,
             lifetimes: $lt,
             types: $ty
@@ -268,7 +278,7 @@ macro_rules! make_kind {
 #[macro_export]
 macro_rules! make_trait {
     ($name:path$({$($gen:tt)*})? : ($($types:tt)*)) => ({
-        let name = StringWrapper::from(stringify!($name));
+        let name = crate::parse_path!($name);
         let (_lt_generics, type_generics): (Vec<Lifetime>, _)
             = crate::parse_generics!([],[];$($($gen)*,)?);
         (name.clone(), crate::semantics::Trait {
@@ -375,7 +385,7 @@ macro_rules! parse_types {
 #[macro_export]
 macro_rules! make_enum {
     ($name:path$({$($gen:tt)*})?: ($($structs:tt)*)) => (
-        (StringWrapper::Static(stringify!($name)), (
+        (crate::parse_path!($name), (
             Rc::new(make_type!($name$({$($gen)*})?)),
             crate::parse_structs!(;$($structs)*,)
         ))
@@ -402,15 +412,15 @@ macro_rules! parse_structs {
 
 #[macro_export]
 macro_rules! make_struct {
-    (()) => (("#Unit".into(), (
+    (()) => ((vec![StringWrapper::from("#Unit")], (
         Rc::new(make_type!(())),
         Rc::new(Fields::None)
     )));
     (($len:expr;)) => ({
         let len = $len;
-        (crate::ty_macros::TUPLE_NAMES[len-1].into(), (
+        (vec![StringWrapper::from(crate::ty_macros::TUPLE_NAMES[len-1])], (
             Rc::new(Type {
-                name: crate::ty_macros::TUPLE_NAMES[len-1].into(),
+                name: vec![crate::ty_macros::TUPLE_NAMES[len-1].into()],
                 lt_args: vec![],
                 lt_generics: vec![],
                 type_generics: crate::ty_macros::GEN_STRING[0..len].iter()
@@ -430,7 +440,7 @@ macro_rules! make_struct {
         ))
     });
     ($name:path$({$($gen:tt)*})? ) =>
-        ((stringify!($name).into(), (
+        ((crate::parse_path!($name), (
             Rc::new(make_type!($name$({$($gen)*})?)),
             Rc::new(Fields::None)
         )));
@@ -472,13 +482,13 @@ macro_rules! parse_named_fields {
     ($(,$fields:expr)*;$(pub)? $name:ident : $ty:ident$({$($gen:tt)*})?$([$($arg:tt)*])?, $($rest:tt)*) => 
         (parse_named_fields!($(,$fields:expr)*;$(pub)? $name : #($ty$({$($get)*})?$([$($arg:tt)*])?), $($rest)*));
     ($(,$fields:expr)*;pub $name:ident : #($($ty:tt)*), $($rest:tt)*) => {
-        parse_named_fields!($(,$fields)*, (stringify!($name).into(), crate::semantics::Field {
+        parse_named_fields!($(,$fields)*, (crate::parse_path!($name), crate::semantics::Field {
             visible: true,
             ty: make_type!($($ty)*)
         }; $($rest)*));
     };
     ($(,$fields:expr)*;$name:ident : #($($ty:tt)*), $($rest:tt)*) => {
-        parse_named_fields!($(,$fields)*, (stringify!($name).into(), crate::semantics::Field {
+        parse_named_fields!($(,$fields)*, (crate::parse_path!($name), crate::semantics::Field {
             visible: false,
             ty: make_type!($($ty)*)
         }; $($rest)*));
@@ -490,7 +500,7 @@ macro_rules! make_macro {
     ($ty:path$({$($gen:tt)*})?$([$($arg:tt)*])? : $name:ident($fn:expr)) => 
         (#($ty{$($gen)*}[$($arg)*]) : $name($fn));
     (#($($ty:tt)*) : $name:ident($fn:expr)) => {
-        (StringWrapper::from(stringify!($name)), Rc::new(Macro {
+        (crate::parse_path!($name), Rc::new(Macro {
             constructor: $fn,
             ty: crate::make_type!($($ty)*)
         }))
