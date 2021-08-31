@@ -330,6 +330,7 @@ pub type MacroScope = HashMap<Path, Rc<Macro>>;
 pub type MethodScope = Vec<(Either<Rc<Type>, TraitDescription>, Vec<Rc<Method>>)>;
 #[derive(Clone, Debug)]
 pub struct Scope {
+    pub path_aliases: HashMap<Path, Vec<Path>>,
     pub owned: bool,
     pub vars: VarScope,
     pub types: TypeScope,
@@ -346,6 +347,23 @@ pub struct Operator {
     pub type_generics: TypeGenerics,
     pub operands: (Type, Option<Type>),
     pub ret_type: Type,
+}
+impl Default for Scope {
+    fn default() -> Self {
+        Scope {
+            owned: true,
+            path_aliases: Default::default(),
+            vars: Default::default(),
+            types: Default::default(),
+            lifetimes: Default::default(),
+            traits: Default::default(),
+            structs: Default::default(),
+            enums: Default::default(),
+            macros: Default::default(),
+            methods: Default::default(),
+            by_ty_name: Default::default(),
+        }
+    }
 }
 impl PartialEq for Scope {
     fn eq(&self, other: &Self) -> bool {
@@ -762,18 +780,7 @@ const INDIRECT_TYPES: [&'static [StringWrapper]; 4] = [
 ];
 
 pub fn push_scope(ctx: &mut Context) {
-    ctx.scopes = Rc::new(RcList::Cons(RefCell::new(Scope {
-        owned: true,
-        macros: HashMap::new(),
-        methods: vec![],
-        vars: HashMap::new(),
-        types: HashMap::new(),
-        lifetimes: HashMap::new(),
-        traits: HashMap::new(),
-        structs: HashMap::new(),
-        enums: HashMap::new(),
-        by_ty_name: HashMap::new()
-    }), ctx.scopes.clone()));
+    ctx.scopes = Rc::new(RcList::Cons(RefCell::new(Default::default()), ctx.scopes.clone()));
 }
 
 #[allow(dead_code)]

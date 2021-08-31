@@ -6,7 +6,7 @@ use quote::quote;
 use lazy_static::lazy_static;
 use std::mem;
 
-use crate::string_wrapper::*;
+use crate::{choose::choose_consume, string_wrapper::*};
 
 use crate::context_arbitrary::*;
 use crate::context_arbitrary as context_arbitrary;
@@ -30,7 +30,7 @@ pub fn make_wrapped_file<'a>(ctx: &mut Context, u: &mut Unstructured<'a>) -> Res
     Ok(WrappedFile(c_arbitrary(ctx, u)?))
 }
 
-// to help with type inference
+/// To help with type inference
 fn ok<T>(a: T) -> context_arbitrary::Result<T> {
     Ok(a)
 }
@@ -484,7 +484,7 @@ impl From<sem::Fields> for syn::Fields {
     }
 }
 
-fn from_sem_expr(ctx: &Context, u: &mut Unstructured, ex: &sem::Expr) -> Result<Expr> {
+fn from_sem_expr(ctx: &mut Context, u: &mut Unstructured, ex: &sem::Expr) -> Result<Expr> {
     Ok(match ex {
         sem::Expr::Lit(path, type_args) => {
             let name = path.last().expect("Empty path");
@@ -624,7 +624,7 @@ fn from_sem_expr(ctx: &Context, u: &mut Unstructured, ex: &sem::Expr) -> Result<
             syn::Expr::Macro(ExprMacro {
                 attrs: vec![],
                 mac: syn::Macro {
-                    path: make_path(&name, PathArguments::None),
+                    path: from_sem_path(ctx, u, &name)?,
                     bang_token: parse_quote!(!),
                     delimiter: match body.brackets {
                         BracketType::Round => MacroDelimiter::Paren(Default::default()),
@@ -662,7 +662,7 @@ fn from_sem_expr(ctx: &Context, u: &mut Unstructured, ex: &sem::Expr) -> Result<
         sem::Expr::Var(path) => Expr::Path(ExprPath {
             attrs: vec![],
             qself: None,
-            path: make_path(&path, PathArguments::None),
+            path: from_sem_path(ctx, u, &path)?,
         }),
         sem::Expr::ExactString(str) => Expr::Lit(ExprLit {
             attrs: vec![],
@@ -829,7 +829,7 @@ fn extract_additional_args(ctx: &mut Context, u: &mut Unstructured, e: sem::Expr
 }
 
 fn from_sem_generics(
-    _ctx: &mut Context, u: &mut Unstructured,
+    ctx: &mut Context, u: &mut Unstructured,
     lt_generics: &Vec<StringWrapper>,
     type_generics: &sem::TypeGenerics
 ) -> Result<Generics> {
@@ -851,7 +851,7 @@ fn from_sem_generics(
             colon_token: parse_quote!(:),
             // TODO: add lifetime bounds
             bounds: iter::empty::<Lifetime>().collect()
-        }))).chain(type_generics.iter().map(|ty_gen| Ok(GenericParam::Type(TypeParam {
+        }))).collect::<Vec<_>>().into_iter().chain(type_generics.iter().map(|ty_gen| Ok(GenericParam::Type(TypeParam {
             attrs: vec![],
             ident: name_to_ident_det(ty_gen.name.as_str()),
             colon_token: parse_quote!(:),
@@ -861,7 +861,7 @@ fn from_sem_generics(
                     paren_token: Some(Paren { span: dummy_span() }),
                     modifier: TraitBoundModifier::None,
                     lifetimes: None,
-                    path: make_path(&c.trait_name, PathArguments::None)
+                    path: from_sem_path(ctx, u, &c.trait_name)?
                 })
             )).collect::<Result<_>>()?,
             // TODO: defaults
@@ -876,6 +876,17 @@ fn from_sem_generics(
         // TODO: where clause
         where_clause: None
     })
+}
+
+fn from_sem_path(ctx: &Context, u: &mut Unstructured, path: &sem::Path) -> Result<syn::Path> {
+    let mut aliases = vec![path];
+    for scope in ctx.scopes.iter() {
+        if let Some(found_aliases) = scope.path_aliases.get(path) {
+            aliases.extend(found_aliases)
+        }
+    }
+    let path_suffix = choose_consume(u, aliases.into_iter())?;
+    Ok(make_path(path_suffix, PathArguments::None))
 }
 
 fn name_to_ident(u: &mut Unstructured, name: &str) -> Result<Ident> {
@@ -1836,31 +1847,33 @@ fn type_with_sig(ctx: &mut Context, u: &mut Unstructured)
     let len = c_arbitrary_iter::<(), Context>(ctx, u)
         .collect::<Result<Vec<()>>>()?
         .len();
-    for _ in 0..len {
-        let ty = if lt_generics.len() == 0 {
-            pick_type_that(
-                ctx, u,
-                |_,k| k.lifetimes == 0
-            )?
-        } else {
-            pick_type(ctx, u)?.assign_lts(&mut ||
-                -> arbitrary::Result<sem::Lifetime> {
-                Ok(sem::Lifetime::Named(u.choose(&lt_generics)?.clone()))
-            })?
-        };
-        input_tys.push(ty.clone());
-        // TODO: allow mutable arguments
-        let (pat, vars) = sub_pattern!(ctx, irrefutable!(ctx, pattern_of_type(ctx, u, &ty)?));
-        for (name, var) in vars {
-            add_var(ctx, vec![name], var);
+    reserve_names!(ctx, {
+        for _ in 0..len {
+            let ty = if lt_generics.len() == 0 {
+                pick_type_that(
+                    ctx, u,
+                    |_,k| k.lifetimes == 0
+                )?
+            } else {
+                pick_type(ctx, u)?.assign_lts(&mut ||
+                    -> arbitrary::Result<sem::Lifetime> {
+                    Ok(sem::Lifetime::Named(u.choose(&lt_generics)?.clone()))
+                })?
+            };
+            input_tys.push(ty.clone());
+            let (pat, vars) = sub_pattern!(ctx, irrefutable!(ctx, pattern_of_type(ctx, u, &ty)?));
+            for (name, var) in vars {
+                ctx.reserved_names.insert(name.clone());
+                add_var(ctx, vec![name], var);
+            }
+            input_vec.push(FnArg::Typed(PatType {
+                attrs: vec![],
+                colon_token: parse_quote!(:),
+                pat: Box::new(pat),
+                ty: Box::new(ty.into())
+            }));
         }
-        input_vec.push(FnArg::Typed(PatType {
-            attrs: vec![],
-            colon_token: parse_quote!(:),
-            pat: Box::new(pat),
-            ty: Box::new(ty.into())
-        }));
-    }
+    });
 
     output_ty = pick_type(ctx, u)?;
     if output_ty.needs_lt() {
@@ -2243,7 +2256,7 @@ impl<'a> ContextArbitrary<'a, Context> for syn::Receiver {
 }
 
 impl<'a> ContextArbitrary<'a, Context> for Block {
-    fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
+    fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> { 
         let stmts: Vec<Stmt>;
         if ctx.regard_semantics  {
             // TODO: if there is a (guaranteed) return/break somewhere, the last
@@ -2266,7 +2279,7 @@ impl<'a> ContextArbitrary<'a, Context> for Block {
                 for (name, var) in ctx.scopes.top_mut().iter().flat_map(|s| s.vars.iter()) {
                     // if ty.fits_constraints(ctx, &vec![parse_constraint!(Debug)]) {
                     if var.ty.func.is_none() {
-                        init_stmts.push(make_print(name.clone(), &var.ty));
+                        init_stmts.push(make_print(ctx, u, name.clone(), &var.ty)?);
                     }
                 }
             }
@@ -2386,6 +2399,7 @@ fn pattern_of_type<'a, 'b>(
             underscore_token:parse_quote!(_)
         }), vec![]),
         !needs_type_pat && ty.name.last().unwrap().starts_with("#Tuple") => {
+            // TODO: it's currently possible to have tuple fields shadow eachother
             let mut fields = vec![];
             let mut sub_vars = vec![];
             // TODO: do we need to end the lifetime of the thing being destructured?
@@ -2979,9 +2993,9 @@ impl<'a> ContextArbitrary<'a, Context> for ExprBreak {
     }
 }
 
-fn make_print(name: Path, _ty: &sem::Type) -> Stmt {
-    let ident = make_path(&name, PathArguments::None);
-    Stmt::Semi(Expr::Macro(ExprMacro {
+fn make_print(ctx: &Context, u: &mut Unstructured, name: Path, _ty: &sem::Type) -> Result<Stmt> {
+    let ident = from_sem_path(ctx, u, &name)?;
+    Ok(Stmt::Semi(Expr::Macro(ExprMacro {
         attrs: vec![],
         mac: syn::Macro {
             path: parse_quote!(println),
@@ -2989,7 +3003,7 @@ fn make_print(name: Path, _ty: &sem::Type) -> Stmt {
             delimiter: MacroDelimiter::Paren(Paren { span: dummy_span() }),
             tokens: quote!("{:?}", #ident)
         }
-    }), parse_quote!(;))
+    }), parse_quote!(;)))
 }
 
 impl<'a> ContextArbitrary<'a, Context> for ExprBlock {
@@ -3139,7 +3153,8 @@ impl<'a> ContextArbitrary<'a, Context> for ExprPath {
                 ctx, u,
                 |_,v| v.ty.matches(&expected_type)
             )?;
-            path = make_path(&var, PathArguments::None);
+            let var = var.clone();
+            path = from_sem_path(ctx, u, &var)?;
         } else {
             path = c_arbitrary(ctx, u)?;
         }
@@ -3344,6 +3359,47 @@ lazy_static! {
 // TODO: handle the "union" soft keyword
 impl<'a> ContextArbitrary<'a, Context> for Ident {
     fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
+
+        /// You are usually not allowed to shadow tuple structs. We are only interested
+        /// in single-segment tuple structs since you can't shadow qualified paths
+        fn get_tuple_structs(ctx: &Context) -> Vec<&str> {
+            let mut one_segment_aliases = HashMap::new();
+            for scope in ctx.scopes.iter() {
+                for (path, aliases) in scope.path_aliases.iter() {
+                    one_segment_aliases.insert(
+                        path,
+                        aliases.iter().filter(|a| a.len() == 1).collect::<Vec<_>>()
+                    );
+                }
+            }
+            let mut tuple_structs: Vec<&str> = vec![];
+            for scope in ctx.scopes.iter() {
+                for (name, (_ty, fields)) in scope.structs.iter() {
+                    if let sem::Fields::Named(_) = fields.as_ref() {
+                        if name.len() == 1 {
+                            tuple_structs.push(name[0].as_str());
+                        }
+                        if let Some(aliases) = one_segment_aliases.get(name) {
+                            tuple_structs.extend(aliases.iter().map(|a| a[0].as_str()));
+                        }
+                    }
+                }
+                for (name, (_ty, variants)) in scope.enums.iter() {
+                    for (var_name, fields) in variants {
+                        if let sem::Fields::Named(_) = fields.as_ref() {
+                            let mut full_path = name.clone();
+                            full_path.push(var_name.clone());
+                            if let Some(aliases) = one_segment_aliases.get(name) {
+                                tuple_structs.extend(aliases.iter().map(|a| a[0].as_str()));
+                            }
+                        }
+                    }
+
+                }
+            }
+            tuple_structs
+        }
+
         let mut name: String = String::new();
         let fst_chars: &Vec<char>;
         let rest_chars: &Vec<char>;
@@ -3361,8 +3417,17 @@ impl<'a> ContextArbitrary<'a, Context> for Ident {
             let char = *u.choose(rest_chars)?;
             name.push(char);
         }
-        // Lifetimes can't have raw variables, so we can't just make it a raw variable if it is a keyword
+        let tuple_structs = if ctx.is_lifetime {
+            vec![]
+        } else {
+            // vec![]
+            get_tuple_structs(ctx)
+        };
         while ctx.reserved_names.contains(&name.clone().into()) || 
+            // Tuple structs can't be shadowed
+            (!ctx.is_lifetime && ctx.regard_semantics && tuple_structs.contains(&name.as_str())) || 
+            // Lifetimes can't have raw variables, so we can't just make
+            // it a raw variable if it is a keyword
             ctx.is_lifetime && (KWDS_STRICT.contains(&&name[..]) || name == "static") {
             let char = *u.choose(rest_chars)?;
             name.push(char);
