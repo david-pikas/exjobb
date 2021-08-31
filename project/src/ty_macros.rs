@@ -15,6 +15,13 @@ macro_rules! make_var {
 }
 
 #[macro_export]
+macro_rules! make_alias {
+    ($name:path : [$($alias:path),*]) => {
+        ((crate::parse_path!($name), vec![$(crate::parse_path!($alias)),*]))
+    }
+}
+
+#[macro_export]
 macro_rules! make_type {
     (!) => (crate::semantics::Type {
         name: vec!["!".into()],

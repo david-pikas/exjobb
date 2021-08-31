@@ -127,18 +127,7 @@ impl Context {
         ].iter().cloned().collect());
         Context {
             scopes: Rc::new(crate::semantics::RcList::Cons(
-                RefCell::new(Scope {
-                    owned: true,
-                    vars: HashMap::new(),
-                    types: HashMap::new(),
-                    lifetimes: HashMap::new(),
-                    traits: HashMap::new(),
-                    structs: HashMap::new(),
-                    enums: HashMap::new(),
-                    macros: HashMap::new(),
-                    methods: vec![],
-                    by_ty_name: HashMap::new(),
-                }),
+                RefCell::new(Default::default()),
                 Rc::clone(&basic_scopes)
             )),
             basic_scopes,

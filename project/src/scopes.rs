@@ -4,6 +4,7 @@ use std::rc::Rc;
 use arbitrary::Arbitrary;
 
 use crate::context_arbitrary::c_arbitrary_iter_with_non_mut;
+use crate::make_alias;
 use crate::semantics::*;
 use crate::string_wrapper::*;
 use crate::{make_var, make_type, make_kind, make_methods, make_trait, make_struct, make_enum, make_macro};
@@ -12,33 +13,13 @@ use crate::{make_var, make_type, make_kind, make_methods, make_trait, make_struc
 
 pub fn prelude_scope(use_panics: bool) -> Scope {
     let mut scope = Scope {
-        by_ty_name: HashMap::new(),
         owned: false,
         vars: vec![
             make_var!(drop: %Fn{T}(T)),
         ].into_iter().collect(), 
         types: [
-            // make_kind!(Sized),
-            // make_kind!(Sync),
-            // make_kind!(Unpin),
-            // make_kind!(Drop),
-            // make_kind!(Fn{2}),
-            // make_kind!(FnOnce{2}),
-            // make_kind!(AsMut{1}),
-            // make_kind!(From{1}),
-            // make_kind!(Into{1}),
-            // make_kind!(DoubleEndedIterator),
-            // make_kind!(ExactSizeIterator),
-            // make_kind!(Extend{1}),
-            // make_kind!(IntoIterator),
-            // make_kind!(Iterator),
             make_kind!(Option{1}),
             make_kind!(Result{2}),
-            // make_kind!(Default),
-            // make_kind!(Eq),
-            // make_kind!(Ord),
-            // make_kind!(ParitalOrd),
-            // make_kind!(ToOwned),
             make_kind!(Box{1}),
             make_kind!(String),
             make_kind!(Vec{1}),
@@ -139,7 +120,6 @@ pub fn prelude_scope(use_panics: bool) -> Scope {
                 Result{R: (Clone), E: (Clone)}[R,E]
             ))
         ].iter().cloned().collect(),
-        structs: HashMap::new(),
         enums: [
             make_enum!(Result{R,E}: (
                 Ok(R),
@@ -155,6 +135,12 @@ pub fn prelude_scope(use_panics: bool) -> Scope {
                 ConnectionRefused,
             ))
         ].iter().cloned().collect(), 
+        path_aliases: [
+            make_alias!(Result::Ok  : [Ok]),
+            make_alias!(Result::Err : [Err]),
+            make_alias!(Option::Some : [Some]),
+            make_alias!(Option::None : [None]),
+        ].iter().cloned().collect(),
         macros: {
             let mut macros = vec![
                 make_macro!(#(Vec{T}) : vec(|ty_args, ctx, u| {
@@ -182,6 +168,7 @@ pub fn prelude_scope(use_panics: bool) -> Scope {
             }
             macros
         }.into_iter().collect(), 
+        ..Default::default()
     };
     scope.make_ty_index();
     scope
@@ -189,10 +176,7 @@ pub fn prelude_scope(use_panics: bool) -> Scope {
 
 pub fn primitive_scope() -> Scope {
     let mut scope = Scope {
-        by_ty_name: HashMap::new(),
         owned: false,
-        vars: HashMap::new(),
-        macros: HashMap::new(),
         methods: vec![
             make_methods!(String {
                 new() -> String
@@ -260,8 +244,7 @@ pub fn primitive_scope() -> Scope {
             make_kind!(&mut),
             (vec!["!".into()], Kind { is_visible: true, lifetimes: 0, types: 0 })
         ].iter().cloned().collect(),
-        lifetimes: HashMap::new(),
-        traits: HashMap::new(),
+        ..Default::default()
     };
     scope.make_ty_index();
     scope
