@@ -14,6 +14,50 @@ where I: ExactSizeIterator<Item = T> {
     Ok(choices.nth(idx).unwrap())
 }
 
+pub fn shuffle<T>(u: &mut Unstructured, v: &mut Vec<T>) -> Result<()> {
+    //! Fisher-Yates shuffle
+    for i in 0..v.len() {
+        let j = choose_consume(u, (0..=i as u16).into_iter())?;
+        unsafe {
+            // Usually aliasing is not allowed, but in this case swapping
+            // a value with itself is perfectly valid which is why we must use
+            // ptr::swap. The function is safe as long as the pointers are
+            // aligned and valid which they trivially are in this case.
+            std::ptr::swap(&mut v[i], &mut v[j as usize]);
+        }
+    }
+    Ok(())
+}
+
+pub fn interleave<T, I1, I2>(u: &mut Unstructured, mut i1: I1, mut i2: I2) -> Result<Vec<T>>
+    where I1: ExactSizeIterator<Item=T>, I2: ExactSizeIterator<Item=T> {
+
+    let len1 = i1.len();
+    let len2 = i2.len();
+
+    let mut result = vec![];
+
+    while i1.len() != 0 || i2.len() != 0 {
+        if i1.len() == 0 { 
+            result.push(i2.next().unwrap());
+            continue;
+        }
+        if i2.len() == 0 { 
+            result.push(i1.next().unwrap());
+            continue;
+        }
+        let choice = u.int_in_range(0..=len1+len2)?;
+        if choice < len1 {
+            result.push(i1.next().unwrap());
+        } else {
+            result.push(i2.next().unwrap());
+        }
+    }
+
+    Ok(result)
+
+}
+
 #[macro_export]
 macro_rules! guarded_lazy_choose {
     ($u:ident, { $($guard:expr => $choice:expr),*$(,)? }) => {
