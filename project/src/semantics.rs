@@ -7,6 +7,7 @@ use std::iter;
 use std::iter::FromIterator;
 use std::rc::Rc;
 use std::collections::HashSet;
+use std::sync::atomic::{self, AtomicUsize};
 use arbitrary::{Arbitrary, Unstructured};
 use crate::context::{RefType, fresh_lt};
 use crate::context_arbitrary::{Result, GenerationError};
@@ -328,8 +329,17 @@ pub type StructScope = HashMap<Path, (Rc<Type>, Struct)>;
 pub type EnumScope = HashMap<Path, (Rc<Type>, HashMap<StringWrapper, Struct>)>;
 pub type MacroScope = HashMap<Path, Rc<Macro>>;
 pub type MethodScope = Vec<(Either<Rc<Type>, TraitDescription>, Vec<Rc<Method>>)>;
+#[derive(Clone, Debug, Default)]
+pub struct Reservations {
+    pub fns: Vec<StringWrapper>,
+    /// The bool being true means that the struct is a tuple struct
+    pub structs: Vec<(Type, bool)>,
+    pub enums: Vec<(Type, Vec<(StringWrapper, bool)>)>
+}
+static mut SCOPE_ID: AtomicUsize = AtomicUsize::new(0);
 #[derive(Clone, Debug)]
 pub struct Scope {
+    pub id: usize,
     pub path_aliases: HashMap<Path, Vec<Path>>,
     pub owned: bool,
     pub vars: VarScope,
@@ -337,6 +347,7 @@ pub struct Scope {
     pub lifetimes: LtScope,
     pub traits: TraitScope,
     pub structs: StructScope,
+    pub reserved: Reservations,
     pub enums: EnumScope,
     pub macros: MacroScope,
     pub methods: MethodScope,
@@ -350,7 +361,17 @@ pub struct Operator {
 }
 impl Default for Scope {
     fn default() -> Self {
+        let id;
+        unsafe {
+            // unsafe is required because of potential race conditions which should not
+            // be a problem since the program doesn't currently use concurency. Nevertheles,
+            // SCOPE_ID is an atomic value to make it concurrently safe. The ordering doesn't
+            // currently matter, but it was selected arbitrarily and should maybe be changed
+            // if the program does become concurrent in the future.
+            id = SCOPE_ID.fetch_add(1, atomic::Ordering::Relaxed);
+        }
         Scope {
+            id,
             owned: true,
             path_aliases: Default::default(),
             vars: Default::default(),
@@ -358,6 +379,7 @@ impl Default for Scope {
             lifetimes: Default::default(),
             traits: Default::default(),
             structs: Default::default(),
+            reserved: Default::default(),
             enums: Default::default(),
             macros: Default::default(),
             methods: Default::default(),
@@ -367,11 +389,9 @@ impl Default for Scope {
 }
 impl PartialEq for Scope {
     fn eq(&self, other: &Self) -> bool {
-        self.owned == other.owned &&
-        self.vars == other.vars &&
-        self.types == other.types &&
-        self.structs == other.structs &&
-        self.macros == other.macros
+        //! Scopes are given a unique id on construction but it's possible to break
+        //! the uniqueness in varoius ways which also breaks this function.
+        self.id == other.id
     }
 }
 impl Scope {
@@ -868,11 +888,22 @@ pub fn is_free(ctx: &Context, lt: &Lifetime, ref_ty: RefType) -> bool {
 pub fn add_var<'a>(ctx: &mut Context, name: Path, var: Variable) {
     add_lifetime(ctx, var.lifetime.clone());
     ctx.scopes.top_mut().map(|mut l| {
+        let ty_name = var.ty.name.clone();
         let rc_var = Rc::new(var);
-        l.by_ty_name.entry(rc_var.ty.name.clone())
+        l.by_ty_name.entry(ty_name.clone())
             .or_insert(Default::default())
             .vars.insert(name.clone(), rc_var.clone());
-        l.vars.insert(name, rc_var);
+        let old_var_opt = l.vars.insert(name.clone(), rc_var);
+        // If the variable is being shadowed we need to remove the 
+        // old variable from by_ty_name
+        if let Some(old_var) = old_var_opt {
+            if ty_name != old_var.ty.name {
+                l.by_ty_name.entry(old_var.ty.name.clone())
+                    .or_insert(Default::default())
+                    .vars.remove(&name);
+            }
+        }
+        
     });
 }
 
@@ -1383,7 +1414,20 @@ pub fn construct_value_inner<'a>(
     }
     let mut possible_exprs: Vec<PossibleExpression> = vec![];
 
+    let mut seen_vars = HashSet::new();
+    let (invalid_from, invalid_to) =
+        ctx.not_in_use_scopes.as_ref().map_or((None,None), |(a,b)| (Some(a), Some(b)));
+    let mut scope_is_valid = false;
     for scope in ctx.scopes.iter() {
+        if scope_is_valid && Some(scope.id) ==
+                invalid_from.as_ref().and_then(|i| i.top_mut().map(|s| s.id)) {
+            scope_is_valid = false;
+        }
+        if !scope_is_valid && Some(scope.id) ==
+                invalid_to.as_ref().and_then(|i| i.top_mut().map(|s| s.id)) {
+            scope_is_valid = true;
+        }
+
 
         let by_ty_name = &scope.by_ty_name;
 
@@ -1431,7 +1475,6 @@ pub fn construct_value_inner<'a>(
                 possible_exprs.push(PossibleExpression::Struct(path, struc_ty, struc));
             }
         }
-        let mut seen_vars = HashSet::new();
         for (name, var) in vars {
             let isnt_shadowed = !seen_vars.contains(name);
             seen_vars.insert(name);
@@ -1443,6 +1486,7 @@ pub fn construct_value_inner<'a>(
                 isnt_shadowed &&
                 isnt_reserved &&
                 var.lifetime.is_valid(ctx) &&
+                scope_is_valid &&
                 var.ty.matches(&ty) {
                 possible_exprs.push(PossibleExpression::Var(name, var));
             } else if let Some(func) = &var.ty.func {

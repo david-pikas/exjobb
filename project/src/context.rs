@@ -35,8 +35,13 @@ pub struct Context {
     pub options: Options,
     /// A stack of variable scopes
     pub scopes: Stack<Scope>,
-    /// Used for functions since they don't inherent their parents scope
+    /// Convenient to have a reference for when setting not_in_use_scopes
     pub basic_scopes: Stack<Scope>,
+    /// Nested functions don't inherit variables from their parent scope, but they
+    /// do inherent e.g. structs and enums. If Some(a,b) all scopes between a and
+    /// b can't have variables picked from them, but their structs, enums, use statments
+    /// and possibly more are still in use
+    pub not_in_use_scopes: Option<(Stack<Scope>, Stack<Scope>)>,
     /// Since operators are globaly defined, they live here seperate from the scopes
     pub operators: HashMap<&'static str, Operator>,
     /// if false, generate syntactically valid code that may be semantically incorrect
@@ -121,16 +126,15 @@ pub struct Context {
 
 impl Context {
     pub fn make_context(options: Options) -> Context {
-        let basic_scopes: Stack<Scope> = Rc::new([
+        let top_scope: Stack<Scope> = Rc::new([
+            Default::default(),
             primitive_scope(),
             prelude_scope(options.use_panics),
         ].iter().cloned().collect());
         Context {
-            scopes: Rc::new(crate::semantics::RcList::Cons(
-                RefCell::new(Default::default()),
-                Rc::clone(&basic_scopes)
-            )),
-            basic_scopes,
+            scopes: top_scope.clone(),
+            basic_scopes: top_scope,
+            not_in_use_scopes: None,
             operators: operators(),
             regard_semantics: options.use_semantics,
             options,
