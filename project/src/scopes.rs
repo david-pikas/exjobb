@@ -259,7 +259,6 @@ pub fn operators() -> HashMap<&'static str, Operator> {
                 is_arg_for_other: false
             }],
             operands: (make_type!(T), None),
-            // TODO: the lifetime should be the current scopes lifetime
             ret_type: make_type!(& %local_ref T)
         }),
         ("&mut", Operator {
