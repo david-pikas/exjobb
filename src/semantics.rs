@@ -1,6 +1,6 @@
 use std::backtrace::Backtrace;
 use std::collections::HashMap;
-use std::cell::{Cell, RefCell, RefMut};
+use std::cell::{self, Cell, RefCell, RefMut};
 use std::fmt::Display;
 use std::hash::Hash;
 use std::iter;
@@ -56,6 +56,15 @@ impl Lifetime {
         return false
     }
 }
+impl Display for Lifetime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Lifetime::Named(n) => write!(f, "{}", n.as_str()),
+            Lifetime::Anon(a) => write!(f, "#anon({})", a),
+            Lifetime::Any => write!(f, "#any"),
+        }
+    }
+}
 pub type TypeGenerics = Vec<Generic>;
 pub type LtGenerics = Vec<StringWrapper>;
 #[derive(PartialEq, Eq, Hash, Clone, Debug)]
@@ -104,11 +113,7 @@ impl Display for Type {
                     self.type_args.iter()
                         .map(|a| format!("{}", a))
                         .chain(
-                            self.lt_args.iter().map(|lt| match lt {
-                                Lifetime::Named(n) => n.as_str().to_string(),
-                                Lifetime::Anon(a) => format!("#anon({})", a),
-                                Lifetime::Any => "#any".to_string(),
-                            })
+                            self.lt_args.iter().map(|lt| format!("{}", lt))
                         )
                         .reduce(|acc, gen| format!("{}, {}", acc, gen))
                         .unwrap_or("".to_string())
@@ -513,6 +518,12 @@ impl<T> RcList<T> {
             RcList::Cons(t, _rest) => Some(t.borrow_mut())
         }
     }
+    pub fn top(&self) -> Option<cell::Ref<T>> {
+        match self {
+            RcList::Nill => None,
+            RcList::Cons(t, _rest) => Some(t.borrow())
+        }
+    }
 }
 impl<T> FromIterator<T> for RcList<T> {
     fn from_iter<Iter: IntoIterator<Item = T>>(into_iter: Iter) -> Self {
@@ -549,6 +560,9 @@ pub enum Expr {
 impl Type {
     pub fn sub_tys<'a>(&'a self) -> Box<dyn Iterator<Item=&Type> + 'a> {
         Box::new(iter::once(self).chain(self.type_args.iter().flat_map(Type::sub_tys)))
+    }
+    pub fn sub_lts<'a>(&'a self) -> Box<dyn Iterator<Item=&Lifetime> + 'a> {
+        Box::new(self.sub_tys().flat_map(|ty| ty.lt_args.iter()))
     }
     pub fn matches(&self, other: &Type) -> bool {
         self.matches_with_generics(other, &self.type_generics)
@@ -833,6 +847,15 @@ pub fn end_lifetime(ctx: &Context, lt: &Lifetime) {
         }
     }
     // panic!("Attemted to remove lifetime {:?}, but it couldn't be found", lt);
+}
+
+pub fn is_alive(ctx: &Context, lt: &Lifetime) -> bool {
+    for scope in ctx.scopes.iter() {
+        if let Some((is_valid, _)) = scope.lifetimes.get(lt) {
+            return is_valid.get();
+        }
+    }
+    return false;
 }
 
 pub fn constrain_lt(ctx: &Context, lt: &Lifetime, constraint: &Lifetime) {
@@ -1166,6 +1189,20 @@ impl VarHandling {
             false
         }
     }
+    fn get_lifetime(&self) -> Option<&Lifetime> {
+        match self {
+            Borrow(lt) => Some(lt),
+            MutBorrow(lt) => Some(lt),
+            Own => None
+        }
+    }
+    fn map<F: Fn(&Lifetime) -> Lifetime>(&self, f: F) -> Self {
+        match self {
+            Borrow(lt) => Borrow(f(lt)),
+            MutBorrow(lt) => MutBorrow(f(lt)),
+            Own => Own
+        }
+    }
 }
 use VarHandling::*;
 impl From<&VarHandling> for RefType {
@@ -1185,7 +1222,11 @@ pub fn construct_value<'a>(
 ) -> Result<Expr> {
     ctx.size.set(0);
     ctx.reserved_lts.replace(vec![]);
-    construct_value_inner(ctx, u, ty, allow_ambiguity, Own)
+    let result = construct_value_inner(ctx, u, ty, allow_ambiguity, Own);
+    let tmps = ctx.temporaries.replace(vec![]);
+    tmps.into_iter().for_each(|lt| end_lifetime(ctx, &lt));
+    ctx.kill_temps.set(false);
+    return result;
 }
 
 const MAX_SIZE: usize = 30;
@@ -1420,11 +1461,11 @@ pub fn construct_value_inner<'a>(
     let mut scope_is_valid = false;
     for scope in ctx.scopes.iter() {
         if scope_is_valid && Some(scope.id) ==
-                invalid_from.as_ref().and_then(|i| i.top_mut().map(|s| s.id)) {
+                invalid_from.as_ref().and_then(|i| i.top().map(|s| s.id)) {
             scope_is_valid = false;
         }
         if !scope_is_valid && Some(scope.id) ==
-                invalid_to.as_ref().and_then(|i| i.top_mut().map(|s| s.id)) {
+                invalid_to.as_ref().and_then(|i| i.top().map(|s| s.id)) {
             scope_is_valid = true;
         }
 
@@ -1561,6 +1602,12 @@ pub fn construct_value_inner<'a>(
     let choice = choose_consume(u, possible_exprs.into_iter())?;
     let result = match choice {
         PossibleExpression::Struct(path, struc_ty, struc) => {
+            if ctx.kill_temps.get() {
+                if let Some(lt) = var_handling.get_lifetime() {
+                    ctx.temporaries.borrow_mut().push(lt.clone());
+                }
+            }
+            ctx.kill_temps.set(true);
             let determined_fields = make_struct_generics(
                 u, 
                 allow_ambiguity,
@@ -1640,6 +1687,12 @@ pub fn construct_value_inner<'a>(
             Ok(Expr::Var(name.to_owned()))
         }
         PossibleExpression::Fn(name, fn_ty, func) => {
+            if ctx.kill_temps.get() {
+                if let Some(lt) = var_handling.get_lifetime() {
+                    ctx.temporaries.borrow_mut().push(lt.clone());
+                }
+            }
+            ctx.kill_temps.set(true);
             let mut args = vec![];
             let (determined_args, generic_params) = make_fn_generics(
                 ctx, u, 
@@ -1673,6 +1726,12 @@ pub fn construct_value_inner<'a>(
             Ok(Expr::Fn(name.clone(), given_ty_args, args))
         }
         PossibleExpression::Field(struc_ty, field_ty, name) => {
+            if ctx.kill_temps.get() {
+                if let Some(lt) = var_handling.get_lifetime() {
+                    ctx.temporaries.borrow_mut().push(lt.clone());
+                }
+            }
+            ctx.kill_temps.set(true);
             let required_args_map: HashMap<_,_> = field_ty.diff(&ty).collect(); 
             let mut type_args = vec![];
             for gen in struc_ty.type_generics.iter() {
@@ -1688,6 +1747,12 @@ pub fn construct_value_inner<'a>(
             }, false, Own)?), name.clone()))
         }
         PossibleExpression::Method(method, ty_or_trait) => {
+            if ctx.kill_temps.get() {
+                if let Some(lt) = var_handling.get_lifetime() {
+                    ctx.temporaries.borrow_mut().push(lt.clone());
+                }
+            }
+            ctx.kill_temps.set(true);
             let (trait_args, assoc_ty) = match ty_or_trait {
                 Left(assoc_ty) => (vec![], assoc_ty.as_ref()),
                 Right(trait_desc) => {
@@ -1774,11 +1839,15 @@ pub fn construct_value_inner<'a>(
                 vec![]
             };
             if let Some(ownership) = &method.self_param {
+                let ownership_no_any = ownership.map(|lt| match lt {
+                    Lifetime::Any => fresh_lt(ctx),
+                    _ => lt.clone()
+                });
                 Ok(Expr::Method(
                     Box::new(construct_value_inner(ctx, u, Type {
                         type_args: disc_ty_args,
                         ..assoc_ty.clone()
-                    }, false, ownership.clone())?),
+                    }, false, ownership_no_any.clone())?),
                     method.name.clone(), 
                     given_ty_args,
                     args
@@ -1800,6 +1869,14 @@ pub fn construct_value_inner<'a>(
         }
         
         PossibleExpression::Op(name, op) => {
+            if !name.starts_with("&") {
+                if ctx.kill_temps.get() {
+                    if let Some(lt) = var_handling.get_lifetime() {
+                        ctx.temporaries.borrow_mut().push(lt.clone());
+                    }
+                }
+                ctx.kill_temps.set(true);
+            }
             let diff = op.ret_type.diff(&ty).collect::<Vec<_>>();
             let mut generated_store = vec![];
             // We have to store all the non-reference types in the above vector in order

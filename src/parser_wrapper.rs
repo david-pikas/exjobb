@@ -61,8 +61,7 @@ pub fn make_filename(s: &str) -> FileName {
 }
 
 
-#[allow(dead_code)]
-pub fn compile(filename: &str) -> Result<String, ParserError> {
+pub fn check(filename: &str) -> Result<String, ParserError> {
     let output = Command::new("rustc")
         .arg("-A")
         .arg("warnings")
@@ -72,6 +71,16 @@ pub fn compile(filename: &str) -> Result<String, ParserError> {
         .output()
         .expect("Error executing commant");
     Ok(String::from_utf8(output.stderr).map_err(|e| e.utf8_error())?)
-      
-        
+}
+
+pub fn compile_with_opt(file_in: &str, file_out: &str, opt_level: usize) -> Result<String, ParserError> {
+    let output = Command::new("rustc")
+        .arg(file_in)
+        .arg("-A").arg("warnings")
+        .arg("-A").arg("arithmetic_overflow")
+        .arg("-C").arg(format!("opt-level={}", opt_level))
+        .arg("-o").arg(file_out)
+        .output()
+        .expect("Error executing command");
+    Ok(String::from_utf8(output.stderr).map_err(|e| e.utf8_error())?)
 }

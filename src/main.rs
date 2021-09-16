@@ -6,6 +6,7 @@
 use std::env::Args;
 use std::error::Error;
 use std::fmt::Display;
+use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::{env, fs, io::Read};
@@ -44,6 +45,10 @@ mod syn_arbitrary;
 #[macro_use]
 mod branching;
 
+const AST_FILENAME: &str = "./output_files/ast.rs";
+const FILENAME: &str = "./output_files/generated_code.rs";
+
+
 fn main() -> Result<(), MainError> {
 
     let mut args = env::args();
@@ -57,10 +62,6 @@ fn main() -> Result<(), MainError> {
         return Ok(())
     }
     Options::from(flags.clone()).export_env();
-
-    let ast_filename = "./output_files/ast.rs";
-    let filename = "./output_files/generated_code.rs";
-
     
     let is_interrupeted: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
     let r = is_interrupeted.clone();
@@ -75,6 +76,16 @@ fn main() -> Result<(), MainError> {
         Repeat::Forever => true,
         Repeat::FirstError => errors < 1
     } {
+
+        fn report_error(errors: &mut usize, output: String) {
+            *errors += 1;
+            let timestamp = chrono::Utc::now().format("%Y-%m-%d:%H:%M:%S%.f");
+            fs::copy(FILENAME, format!("possible_bugs/{}.rs", timestamp)).expect("Failed writing to file");
+            fs::copy(AST_FILENAME, format!("possible_bugs/{}_ast.rs", timestamp)).expect("Failed writing to file");
+            fs::write(format!("possible_bugs/{}_err.txt", timestamp), output.clone()).expect("Failed writing to file");
+            println!("({}):\n{}", timestamp, output);
+        }
+
         count += 1;
         let mut rng = thread_rng();
         let len = rng.gen_range(1000000..10000000);
@@ -83,7 +94,7 @@ fn main() -> Result<(), MainError> {
             .take(len)
             .collect();
         let mut program_generator = Popen::create(
-            &[format!("{}/generate-program", dir_str), filename.to_string()], PopenConfig {
+            &[format!("{}/generate-program", dir_str), FILENAME.to_string()], PopenConfig {
                 stdin: Redirection::Pipe,
                 stdout: Redirection::Pipe,
                 ..Default::default()
@@ -97,25 +108,49 @@ fn main() -> Result<(), MainError> {
         } else if let Some(print_stmnts) = m_program_code {
             print!("{}", String::from_utf8(print_stmnts)?);
         }
-        let mut output;
         if flags.use_semantics {
-            output = parser_wrapper::compile(filename)?;
+            if flags.compare_opt_levels {
+                let mut output_files = vec![];
+                for i in 1..=3 {
+                    let output_file = format!("./output_files/o{}.out", i);
+                    output_files.push(output_file.clone());
+                    let output = parser_wrapper::compile_with_opt(FILENAME, &output_file, i)?;
+                    if !output.is_empty() {
+                        report_error(&mut errors, output);
+                    }
+                }
+                let mut program_outputs = vec![];
+                for output_file in output_files {
+                    let output = Command::new(output_file).output()?;
+                    program_outputs.push(String::from_utf8(output.stdout)?);
+                    // TODO: compare the error outputs as well?
+                }
+                if let Some((i, _)) = program_outputs.iter().enumerate().skip(1)
+                    .find(|(_i, output)| output != &&program_outputs[0]) {
+                    let error = format!(
+                        "The output of --opt-level=1 and --opt-level={} differ:\n{}\n\n{}",
+                        i+1,
+                        program_outputs[0],
+                        program_outputs[i],
+                    );
+                    report_error(&mut errors, error);
+                }
+            } else {
+                let output = parser_wrapper::check(FILENAME)?;
+                if !output.is_empty() {
+                    report_error(&mut errors, output);
+                }
+            }
         } else {
             let buf = gag::BufferRedirect::stderr().expect("Error redirecting stdout");
-            output = String::new();
-            if let Err(e) = parse(filename) {
+            let mut output = String::new();
+            if let Err(e) = parse(FILENAME) {
                 output = format!("{:?}", e).to_string();
             }
             buf.into_inner().read_to_string(&mut output)?;
-        }
-
-        if !output.is_empty() {
-            errors += 1;
-            let timestamp = chrono::Utc::now().format("%Y-%m-%d:%H:%M:%S%.f");
-            fs::copy(filename, format!("possible_bugs/{}.rs", timestamp)).expect("Failed writing to file");
-            fs::copy(ast_filename, format!("possible_bugs/{}_ast.rs", timestamp)).expect("Failed writing to file");
-            fs::write(format!("possible_bugs/{}_err.txt", timestamp), output.clone()).expect("Failed writing to file");
-            println!("({}):\n{}", timestamp, output);
+            if !output.is_empty() {
+                report_error(&mut errors, output);
+            }
         }
     }
     println!("Finished {} tests with {} errors", count, errors);
@@ -185,6 +220,7 @@ struct Flags {
     use_semantics: bool,
     use_panics: bool,
     print_vars: bool,
+    compare_opt_levels: bool
 }
 impl From<Flags> for Options {
     fn from(flags: Flags) -> Self {
@@ -192,6 +228,7 @@ impl From<Flags> for Options {
             use_semantics: flags.use_semantics,
             use_panics: flags.use_panics,
             print_vars: flags.print_vars,
+            runnable: flags.compare_opt_levels
         }
     }
 }
@@ -208,7 +245,8 @@ fn parse_args(mut args: Args) -> Flags {
         use_semantics: true,
         exit_imediately: false,
         use_panics: true,
-        print_vars: false
+        print_vars: false,
+        compare_opt_levels: false
     };
     let options: Options = vec![
         (Some("-n"), "--num_of_iterations", ArgAction::Unnary(|flags, arg| {
@@ -228,7 +266,13 @@ fn parse_args(mut args: Args) -> Flags {
         }), "Don't generate any panic statements"),
         (None, "--print-vars", ArgAction::Nullary(|flags| {
             flags.print_vars = true
-        }), "Print the value of every variable (usefull for comparing e.g. different optimisation levels)"),
+        }), "Print the value of every variable (useful for comparing e.g. different optimisation levels)"),
+        (None, "--compare-opt-levels", ArgAction::Nullary(|flags| {
+            flags.print_vars = true;
+            flags.use_semantics = true;
+            flags.use_panics = false;
+            flags.compare_opt_levels = true;
+        }), "Run compile and run the code with -C opt-level set to 1,2 and 3. If the outputs differ that counts as an error. Sets --print-vars, --no-panic and unsets --syntax"),
         (Some("-h"), "--help", ArgAction::Meta(|flags, options| {
             for (short_form, long_form, act, explanation) in options {
                 let arg = match act {

@@ -1061,14 +1061,16 @@ fn crate_attrs<'a>(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Vec<At
     }
     let mut attrs = vec![];
     if ctx.regard_semantics {
+        if !ctx.options.runnable {
+            lazy_maybe!(u, {
+                ctx.has_main = false;
+                attrs.push(wrap_attr(parse_quote!(no_main)))
+            });
+        }
         lazy_maybe!(u, {
-            ctx.has_main = false;
-            attrs.push(wrap_attr(parse_quote!(no_main)))
+            ctx.non_ascii = true;
+            attrs.push(parse_quote!(#![feature(non_ascii_idents)]))
         });
-        // lazy_maybe!(u, {
-        //     ctx.non_ascii = true;
-        //     attrs.push(parse_quote!(#![feature(non_ascii_idents)]))
-        // });
     }
     return Ok(attrs);
 }
@@ -2407,9 +2409,9 @@ impl<'a> ContextArbitrary<'a, Context> for Block {
                 init_stmts.into_iter()
             )?;
             if ctx.options.print_vars {
-                for (name, var) in ctx.scopes.top_mut().iter().flat_map(|s| s.vars.iter()) {
+                for (name, var) in ctx.scopes.top().iter().flat_map(|s| s.vars.iter()) {
                     // if ty.fits_constraints(ctx, &vec![parse_constraint!(Debug)]) {
-                    if var.ty.func.is_none() {
+                    if var.lifetime.is_valid(ctx) && var.ty.func.is_none() {
                         init_stmts.push(make_print(ctx, u, name.clone(), &var.ty)?);
                     }
                 }
@@ -2480,7 +2482,16 @@ impl<'a> ContextArbitrary<'a, Context> for Local {
             }, c_arbitrary(ctx, u)?)));
             for (name, var) in vars {
                 maybe_lt.as_ref().map(|lt| constrain_lt(ctx, &var.lifetime, &lt));
+                let lts = var.ty.sub_lts().cloned().collect::<Vec<_>>();
+                let var_lt = var.lifetime.clone();
                 add_var(ctx, vec![name], var);
+                lts.into_iter().for_each(|lt| {
+                    if is_alive(ctx, &lt) {
+                        constrain_lt(ctx, &var_lt, &lt)
+                    } else {
+                        end_lifetime(ctx, &var_lt);
+                    }
+                });
             }
         } else {
             pat = irrefutable!(ctx, c_arbitrary(ctx, u)?);

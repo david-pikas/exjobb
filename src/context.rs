@@ -13,18 +13,21 @@ pub struct Options {
     pub use_semantics: bool,
     pub use_panics: bool,
     pub print_vars: bool,
+    pub runnable: bool
 }
 impl Options {
     pub fn export_env(&self) {
         env::set_var("RUSTSMITH_USE_SEMANTICS", u8::from(self.use_semantics).to_string());
         env::set_var("RUSTSMITH_USE_PANICS", u8::from(self.use_panics).to_string());
         env::set_var("RUSTSMITH_PRINT_VARS", u8::from(self.print_vars).to_string());
+        env::set_var("RUSTSMITH_RUNNABLE", u8::from(self.runnable).to_string());
     }
     pub fn import_env() -> Self {
         Options {
             use_semantics: env::var("RUSTSMITH_USE_SEMANTICS") == Ok("1".to_string()),
-            use_panics:    env::var("RUSTSMITH_USE_PANICS") == Ok("1".to_string()),
-            print_vars:    env::var("RUSTSMITH_PRINT_VARS") == Ok("1".to_string()),
+            use_panics:    env::var("RUSTSMITH_USE_PANICS")    == Ok("1".to_string()),
+            print_vars:    env::var("RUSTSMITH_PRINT_VARS")    == Ok("1".to_string()),
+            runnable:      env::var("RUSTSMITH_RUNNABLE")      == Ok("1".to_string()),
         }
     }
 }
@@ -121,7 +124,14 @@ pub struct Context {
     /// (Semantics only): A lifetime can't end if it's being used in an expression,
     /// `foo(&bar, &mut bar)` is an error because there is no way to make the first
     /// borrow short enough to prevent it from overlapping with the mutable one.
-    pub reserved_lts: RefCell<Vec<HashMap<Lifetime, RefType>>>
+    pub reserved_lts: RefCell<Vec<HashMap<Lifetime, RefType>>>,
+    /// Temporary values die at the end of their line, with some exceptions.
+    /// in `let a = &mut tmp()` tmp doesn't die, but it does in
+    /// `let a = Some(&mut tmp())` for example.
+    /// see rustc --explain E0716
+    pub temporaries: RefCell<Vec<Lifetime>>,
+    /// Are we in a context where we need to store temporaries for deleteion?
+    pub kill_temps: Cell<bool>
 }
 
 impl Context {
@@ -166,7 +176,9 @@ impl Context {
             size: Cell::new(0),
             branches: None,
             reserved_names: HashSet::new(),
-            reserved_lts: RefCell::new(vec![])
+            reserved_lts: RefCell::new(vec![]),
+            temporaries: RefCell::new(vec![]),
+            kill_temps: Cell::new(false)
         }
     }
 }
