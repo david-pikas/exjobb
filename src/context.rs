@@ -10,8 +10,11 @@ use crate::string_wrapper::StringWrapper;
 
 
 pub struct Options {
+    /// If true generate semantically valid code only
     pub use_semantics: bool,
+    /// Allow panics in semantically valid code
     pub use_panics: bool,
+    /// Print the value of all vars at the end of a scope in semantically valid code
     pub print_vars: bool,
     pub runnable: bool
 }
@@ -91,7 +94,7 @@ pub struct Context {
     /// (Semantics only): is the curent struct an enum variant? if so, don't specify that the fields are pub
     pub is_enum_variant: bool,
     /// (Semantics only): does the current block need a new scope, (usually yes) or does it 
-    /// already have a new scope (such as in the case with functions)
+    /// already have a new scope (such as with functions)
     pub needs_new_scope: bool,
     /// (Semantics only): can the type of the current expression be infered from context or does it have to be unamigious?
     /// In a pattern, allow_ambiguity means that the pattern needs a type anotation

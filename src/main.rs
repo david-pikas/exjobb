@@ -9,14 +9,13 @@ use std::fmt::Display;
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::{env, fs, io::Read};
+use std::{env, fs};
 use std::path::Path;
 
 use rand::{distributions, prelude::Distribution, thread_rng, Rng};
 use subprocess::{Popen, PopenConfig, Redirection};
 
 mod parser_wrapper;
-use parser_wrapper::parse;
 
 #[macro_use]
 mod context_arbitrary;
@@ -142,15 +141,16 @@ fn main() -> Result<(), MainError> {
                 }
             }
         } else {
-            let buf = gag::BufferRedirect::stderr().expect("Error redirecting stdout");
-            let mut output = String::new();
-            if let Err(e) = parse(FILENAME) {
-                output = format!("{:?}", e).to_string();
-            }
-            buf.into_inner().read_to_string(&mut output)?;
-            if !output.is_empty() {
-                report_error(&mut errors, output);
-            }
+            println!("Checknig syntax temporarily disabled");
+            // let buf = gag::BufferRedirect::stderr().expect("Error redirecting stdout");
+            // let mut output = String::new();
+            // if let Err(e) = parse(FILENAME) {
+            //     output = format!("{:?}", e).to_string();
+            // }
+            // buf.into_inner().read_to_string(&mut output)?;
+            // if !output.is_empty() {
+            //     report_error(&mut errors, output);
+            // }
         }
     }
     println!("Finished {} tests with {} errors", count, errors);

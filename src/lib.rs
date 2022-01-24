@@ -6,8 +6,6 @@
 #[macro_use]
 pub mod parser_wrapper;
 
-pub use parser_wrapper::parse;
-
 #[macro_use]
 pub mod context_arbitrary;
 

@@ -341,7 +341,7 @@ pub struct Reservations {
     pub structs: Vec<(Type, bool)>,
     pub enums: Vec<(Type, Vec<(StringWrapper, bool)>)>
 }
-static mut SCOPE_ID: AtomicUsize = AtomicUsize::new(0);
+static SCOPE_ID: AtomicUsize = AtomicUsize::new(0);
 #[derive(Clone, Debug)]
 pub struct Scope {
     pub id: usize,
@@ -366,15 +366,10 @@ pub struct Operator {
 }
 impl Default for Scope {
     fn default() -> Self {
-        let id;
-        unsafe {
-            // unsafe is required because of potential race conditions which should not
-            // be a problem since the program doesn't currently use concurency. Nevertheles,
-            // SCOPE_ID is an atomic value to make it concurrently safe. The ordering doesn't
-            // currently matter, but it was selected arbitrarily and should maybe be changed
-            // if the program does become concurrent in the future.
-            id = SCOPE_ID.fetch_add(1, atomic::Ordering::Relaxed);
-        }
+        // The ordering doesn't currently matter, but it was selected
+        // arbitrarily and should maybe be changed if the program does
+        // become concurrent in the future.
+        let id = SCOPE_ID.fetch_add(1, atomic::Ordering::Relaxed);
         Scope {
             id,
             owned: true,

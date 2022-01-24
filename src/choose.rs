@@ -5,7 +5,7 @@ use crate::context_arbitrary::{Result, GenerationError};
 
 // Verision of Unstructured::choose that doesn't borrow it's argument
 // Modified from: https://docs.rs/arbitrary/0.4.7/src/arbitrary/unstructured.rs.html#366-373
-pub fn choose_consume<'a, T, I>(u: &mut Unstructured<'a>, mut choices: I) -> Result<T> 
+pub fn choose_consume<T, I>(u: &mut Unstructured, mut choices: I) -> Result<T> 
 where I: ExactSizeIterator<Item = T> {
     if choices.len() == 0 {
         return Err(GenerationError::NoChoicesError(Backtrace::capture()))

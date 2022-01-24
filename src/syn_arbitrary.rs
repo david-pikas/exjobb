@@ -2144,12 +2144,14 @@ impl<'a> ContextArbitrary<'a, Context> for Abi {
             None,
             Some(parse_quote!("Rust")),
             Some(parse_quote!("C")),
-            { let name: String = Arbitrary::arbitrary(u)?;
-                Some(parse_quote!(#name)) }
-                })?;
-                Ok(Abi {
-                    extern_token: parse_quote!(extern),
-                    name
+            {
+                let name: String = Arbitrary::arbitrary(u)?;
+                Some(parse_quote!(#name))
+            }
+        })?;
+        Ok(Abi {
+            extern_token: parse_quote!(extern),
+            name
         })
     }
 }
@@ -2179,32 +2181,32 @@ impl<'a> ContextArbitrary<'a, Context> for Pat {
     fn c_arbitrary(ctx: &mut Context, u: &mut Unstructured<'a>) -> Result<Self> {
         let irrefut = !ctx.regard_semantics || !ctx.is_refutable;
         let range = irrefut && (!ctx.regard_semantics || ctx.allow_range);
-guarded_lazy_choose!(u, {
-    true => Pat::Box(c_arbitrary(ctx, u)?),
-    true => Pat::Ident(c_arbitrary(ctx, u)?),
-    true => Pat::Path(c_arbitrary(ctx, u)?),
-    true => Pat::Reference(c_arbitrary(ctx, u)?),
-    true => Pat::Rest(PatRest {
-        attrs: vec![],
-        dot2_token: parse_quote!(..),
-    }),
-    true => Pat::Slice(c_arbitrary(ctx, u)?),
-    true => Pat::Tuple(c_arbitrary(ctx, u)?),
-    // TODO: figure out when type patterns make sense (they often don't)
-    // Box::new(|ctx, u| Ok(Pat::Type(c_arbitrary(ctx, u)?)) ),
-    true => Pat::Wild(PatWild {
-        attrs: vec![],
-        underscore_token: parse_quote!(_),
-    }),
-    // intentionally omitted: Macro, Verbatim
-    // NOTE: Unit literal can be refutable, needs a special case
-    irrefut => Pat::Lit(c_arbitrary(ctx, u)?),
-    // Not even syntactically allowed
-    ctx.is_refutable => Pat::Or(c_arbitrary(ctx, u)?),
-    // NOTE: can be irrefutable, depending on if it's a struct or an enum
-    irrefut => Pat::Struct(c_arbitrary(ctx, u)?),
-    irrefut => Pat::TupleStruct(c_arbitrary(ctx, u)?),
-    range => Pat::Range(c_arbitrary(ctx, u)?)
+        guarded_lazy_choose!(u, {
+            true => Pat::Box(c_arbitrary(ctx, u)?),
+            true => Pat::Ident(c_arbitrary(ctx, u)?),
+            true => Pat::Path(c_arbitrary(ctx, u)?),
+            true => Pat::Reference(c_arbitrary(ctx, u)?),
+            true => Pat::Rest(PatRest {
+                attrs: vec![],
+                dot2_token: parse_quote!(..),
+            }),
+            true => Pat::Slice(c_arbitrary(ctx, u)?),
+            true => Pat::Tuple(c_arbitrary(ctx, u)?),
+            // TODO: figure out when type patterns make sense (they often don't)
+            // Box::new(|ctx, u| Ok(Pat::Type(c_arbitrary(ctx, u)?)) ),
+            true => Pat::Wild(PatWild {
+                attrs: vec![],
+                underscore_token: parse_quote!(_),
+            }),
+            // intentionally omitted: Macro, Verbatim
+            // NOTE: Unit literal can be refutable, needs a special case
+            irrefut => Pat::Lit(c_arbitrary(ctx, u)?),
+            // Not even syntactically allowed
+            ctx.is_refutable => Pat::Or(c_arbitrary(ctx, u)?),
+            // NOTE: can be irrefutable, depending on if it's a struct or an enum
+            irrefut => Pat::Struct(c_arbitrary(ctx, u)?),
+            irrefut => Pat::TupleStruct(c_arbitrary(ctx, u)?),
+            range => Pat::Range(c_arbitrary(ctx, u)?)
         })
     }
 }
@@ -2391,9 +2393,8 @@ impl<'a> ContextArbitrary<'a, Context> for Block {
             if ctx.needs_new_scope {
                 push_scope(ctx);
                 scope_added = true;
-            } else {
-                ctx.needs_new_scope = true;
             }
+            ctx.needs_new_scope = true;
             let old_final_stmnt = ctx.is_final_stmnt;
             ctx.is_final_stmnt = false;
             ctx.scopes.top_mut().unwrap().reserved = c_arbitrary(ctx, u)?;
@@ -2416,16 +2417,15 @@ impl<'a> ContextArbitrary<'a, Context> for Block {
                     }
                 }
             }
+            ctx.is_final_stmnt = true;
             if let Some(ref final_raw) = precomputed {
                 // TODO: the final stmnt could be part of e.g. a block or an if
                 init_stmts.push(Stmt::Expr(from_sem_expr(ctx, u, final_raw)?));
-                ctx.is_final_stmnt = true;
             } else {
                 guarded_lazy_choose!(u, {
                     ctx.expected_type.matches(&make_type!(())) => (),
                     true => init_stmts.push(Stmt::Expr(c_arbitrary(ctx, u)?))
                 })?;
-                ctx.is_final_stmnt = true;
             }
             stmts = init_stmts;
             if scope_added {
