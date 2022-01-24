@@ -80,7 +80,7 @@ fn main() -> Result<(), MainError> {
             *errors += 1;
             let timestamp = chrono::Utc::now().format("%Y-%m-%d:%H:%M:%S%.f");
             fs::copy(FILENAME, format!("possible_bugs/{}.rs", timestamp)).expect("Failed writing to file");
-            fs::copy(AST_FILENAME, format!("possible_bugs/{}_ast.rs", timestamp)).expect("Failed writing to file");
+            // fs::copy(AST_FILENAME, format!("possible_bugs/{}_ast.rs", timestamp)).expect("Failed writing to file");
             fs::write(format!("possible_bugs/{}_err.txt", timestamp), output.clone()).expect("Failed writing to file");
             println!("({}):\n{}", timestamp, output);
         }
@@ -120,14 +120,21 @@ fn main() -> Result<(), MainError> {
                 }
                 let mut program_outputs = vec![];
                 for output_file in output_files {
-                    let output = Command::new(output_file).output()?;
-                    program_outputs.push(String::from_utf8(output.stdout)?);
+                    let output = Command::new(output_file.clone()).output()?;
+                    // Using o1 turns on overflow checks, which will lead to
+                    // different output if there is an overflow error without
+                    // it being a bug. We will ignore the output of o1 in this
+                    // case
+                    if !(output_file.ends_with("o1.out") && String::from_utf8_lossy(&output.stdout).contains("with overflow'")) {
+                        program_outputs.push(String::from_utf8(output.stdout)?);
+                    }
                     // TODO: compare the error outputs as well?
                 }
                 if let Some((i, _)) = program_outputs.iter().enumerate().skip(1)
                     .find(|(_i, output)| output != &&program_outputs[0]) {
                     let error = format!(
-                        "The output of --opt-level=1 and --opt-level={} differ:\n{}\n\n{}",
+                        "The output of --opt-level={} and --opt-level={} differ:\n{}\n\n{}",
+                        i,
                         i+1,
                         program_outputs[0],
                         program_outputs[i],
