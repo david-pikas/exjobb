@@ -2,3 +2,4 @@
 output_files/
 possible_bugs/
 tags
+Cargo.lock

@@ -4,7 +4,7 @@ use std::{backtrace::Backtrace, error::Error, fmt::Display, io, process::Command
 pub enum ParserError {
     Utf8(Utf8Error),
     Io(io::Error),
-    // Parser(String, Backtrace)
+    Parser(String, Backtrace)
 }
 
 impl Display for ParserError {

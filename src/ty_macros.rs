@@ -473,13 +473,13 @@ macro_rules! parse_unnamed_fields {
         parse_unnamed_fields!($(,$fields)*, crate::semantics::Field {
             visible: true,
             ty: make_type!($($ty)*)
-        }; $($rest)*);
+        }; $($rest)*)
     };
     ($(,$fields:expr)*; #($($ty:tt)*), $($rest:tt)*) => {
         crate::parse_unnamed_fields!($(,$fields)*, crate::semantics::Field {
             visible: false,
             ty: Rc::new(make_type!($($ty)*))
-        }; $($rest)*);
+        }; $($rest)*)
     };
 }
 
